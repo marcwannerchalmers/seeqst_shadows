@@ -1,24 +1,29 @@
 from abc import ABC, abstractmethod
 from typing import List, Any
-from tools.utils import build_parallel_entangler_blocks, parse_circuit, flatten_list, post_meas_state_gates, Observable
-import qutip as qt
+from tools.utils import build_parallel_entangler_blocks, parse_circuit, flatten_list, post_meas_state_gates
+from tools.observable import Observable, PauliObservable
+from tools.state import State, HRState
 import pennylane as qp
 from pennylane.typing import TensorLike
 import numpy as np
 from numpy.typing import NDArray
 from pennylane.operation import Operator
 
+large_width = 400
+np.set_printoptions(linewidth=large_width)
+
 
 
 class Shadow(ABC):
     # n: number of qubits
     # gate_indices: indices the U(.) method can take. Can also give as a (multidim-) range [min, max] (latter is default)
-    def __init__(self, n: int, gate_indices: List) -> None:
+    def __init__(self, state: State, gate_indices: List) -> None:
         super().__init__()
-        self.n = n
+        self.n = state.n
         self.gate_indices = gate_indices
         self.indices = np.array([])
         self.outcomes = []
+        self.rho = state
 
     # create shadow from N state samples
     def create(self, N: int):
@@ -32,13 +37,13 @@ class Shadow(ABC):
         N = len(self.indices)
         preds = np.zeros((len(obs_list),))
         for idx, outcome in enumerate(self.outcomes):
-            preds += self.prop_inverse_measurement(outcome, idx, obs_list)/N
+            oc = self.prop_inverse_measurement(outcome, idx, obs_list)
+            preds += oc/N
 
         return preds
 
-    @abstractmethod
     def state(self):
-        pass
+        self.rho()
 
     @abstractmethod
     def U(self, ind: List[int])->None:
@@ -55,7 +60,7 @@ class Shadow(ABC):
         pass
 
     def sample_circuit(self, ind: List[int]):
-        @qp.qnode(qp.device("default.qubit", shots=1))
+        @qp.qnode(qp.device("default.qubit", shots=1, wires=range(self.n)))
         def circuit(ind: List[int]):
             self.state()
             self.U(ind)
@@ -85,18 +90,10 @@ class SEEQSTShadow(Shadow):
     # block_idx is the index of the block, whose 
     # binary representation correpsonds to the subset U is sampled from
     # Should be a bitstring or so
-    def __init__(self, num_qubits, gate_indices,
+    def __init__(self, state: State, gate_indices,
                  full_setting=False) -> None:
-        super().__init__(num_qubits, gate_indices)
-        self.state_dm: TensorLike = TensorLike()
-        self.init_state()
+        super().__init__(state, gate_indices)
         self.full_setting = full_setting
-
-    def init_state(self):
-        self.state_dm = qt.rand_ket(2**self.n).full()[:,0]
-
-    def state(self):
-        qp.StatePrep(self.state_dm, wires=range(self.n))
     
     def sample_indices(self, N: int):
         init_indices = super().sample_indices(N)
@@ -116,7 +113,10 @@ class SEEQSTShadow(Shadow):
         # Selective circuit texts - can be modified to improve efficiency
         # circuits = flatten_list(sel_circ_text) 
         # If want to vectorize, need to make the circuits same length and make the circuit function depend on parameters
-        for gate in parse_circuit("".join(sel_circ_text)):
+        gates = parse_circuit("".join(sel_circ_text))
+        # print(gates)
+        # print("U:\n", np.round(qp.matrix(qp.adjoint(qp.prod(*gates))),decimals=2))
+        for gate in gates:
             qp.apply(gate)
 
     # Using b_i as binary representation of 0 <= i < 2**n
@@ -124,20 +124,60 @@ class SEEQSTShadow(Shadow):
     # + 2**(n+1) ( \rho - (\sum_{b_i} |b_i><b_i| <b_i|\rho|b_i>)).
     # When rho = |b_i'><b_i'|, the formula becomes
     # 2 |b_i'><b_i'| - Id/2**n 
-    # + 2**(n+1)(|b_i'><b_i'| - |b_i'><b_i'| ) (cancels out (in fact for any pure state))
+    # + 2**(n+1)(|b_i'><b_i'| - |b_i'><b_i'| ) (cancels out (in fact for any pure state)) NOT TRUE!!!
+    # TODO: Add identity in some way so that the trace is not ignored
     def prop_inverse_measurement(self, outcome, ind, obs_list: List[Observable]) -> NDArray:
         estimates = np.zeros((len(obs_list,)))
         for i, obs in enumerate(obs_list):
-            @qp.qnode(qp.device("default.qubit"))
-            def circuit(outcome):
-                post_meas_state_gates(outcome)
+            @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
+            def circuit_rho(outcome):
+                post_meas_state_gates(outcome, one_ev=1)
                 qp.adjoint(self.U)(self.indices[ind])
                 return qp.expval(obs())
             
-            estimates[i] = 2*circuit(outcome) # assuming Pauli observable
+            @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
+            def circuit_sum(outcome):
+                post_meas_state_gates(outcome, one_ev=1)
+                qp.adjoint(self.U)(self.indices[ind])
+                return qp.probs()
+            
+            """probs = circuit_sum(outcome)
+
+            sum_value = 0
+            for x, p in enumerate(probs):
+                sum_value += p * np.real(qp.matrix(obs())[x,x])
+                print(sum_value)"""
+            
+            @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
+            def circuit_test1(outcome):
+                post_meas_state_gates(outcome, one_ev=1)
+                return qp.state()
+            
+            @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
+            def circuit_test2(outcome):
+                post_meas_state_gates(outcome, one_ev=1)
+                for i in range(self.n):
+                    qp.X(i)
+                qp.adjoint(self.U)(self.indices[ind])
+                return qp.state()
+            out1 = circuit_test1(outcome)
+            out2 = circuit_test2(outcome)
+            print("Outcome: ", outcome, "\nPM: \n", np.round(np.outer(out1, np.conj(out1)), decimals=2), "\nPM U: \n", 
+                  np.round(np.outer(out2, np.conj(out2)), decimals=2))
+            
+            # print(obs())
+            estimates[i] = 2**(self.n+1)*circuit_rho(outcome) # + (2-2**(self.n+1))*sum_value  # assuming Pauli observable
 
         return estimates
             
 
-
+if __name__ == "__main__":
+    obs = PauliObservable("XXX")
+    state = HRState(3)
+    shadow = SEEQSTShadow(state, [0,2**3])
+    ind = [5,1]
+    shadow.indices = np.array([ind])
+    
+    outcome = np.array([0,1,1])
+    shadow.prop_inverse_measurement(outcome, 0, [obs])
 

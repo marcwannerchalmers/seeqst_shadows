@@ -1,4 +1,5 @@
-from tools.utils import PauliObservable
+from tools.observable import PauliObservable
+from tools.state import HRState
 import pennylane as qp
 from shadow import SEEQSTShadow
 from typing import List
@@ -17,7 +18,7 @@ class ShadowScalingExperiment:
         self.gt = np.zeros_like(self.preds)
 
     def step(self, N, n, observables):
-        shadow = SEEQSTShadow(n, [0, 2**n])
+        shadow = SEEQSTShadow(HRState(n), [0, 2**n], full_setting=True)
         shadow.create(N)
         return shadow.predict(observables), shadow.ground_truth(observables)
     
@@ -25,7 +26,7 @@ class ShadowScalingExperiment:
         for i, N in enumerate(self.Ns):
             for j, (n, observables) in enumerate(zip(self.ns, self.observables_list)):
                 self.preds[i,j], self.gt[i,j] = self.step(N, n, observables)
-                print(f"N: {N}, n: {n}, first observable: {observables[0].get_obs_string()}, GT: {self.gt[i,j]}, Pred: {self.preds[i,j]}")
+                print(f"N: {N}, n: {n}, first observable: {observables[0].get_name()}, GT: {self.gt[i,j]}, Pred: {self.preds[i,j]}")
 
     def plot(self, mode="data_scaling", path_save=None):
         if mode == "data_scaling":
@@ -46,13 +47,13 @@ class ShadowScalingExperiment:
             plt.savefig(path_save)
 
 def test_homogenous_paulis():
-    ns = list(range(4,5))
-    Ns = [2**k for k in range(5, 12)]
+    ns = list(range(3,4))
+    Ns = [2**k for k in range(4, 5)]
     # obs_list = [[PauliObservable(O*n) for O in ["X","Y","Z"]] for n in ns]
     obs_list = [[PauliObservable(O*n) for O in ["X"]] for n in ns]
     experiment = ShadowScalingExperiment(Ns, ns, obs_list)
     experiment.run()
-    experiment.plot()
+    # experiment.plot()
 
 def main():
     test_homogenous_paulis()
