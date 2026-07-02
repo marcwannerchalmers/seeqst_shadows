@@ -27,7 +27,7 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
     # Step 1: Initial rotation on first qubit (arbitrary choice)
     XY = "X" if xy_ind == 0 else "Y"
     sequence.append(str(f'(R{XY}90:{active_qubits[0]})'))
-
+    # sequence.append(str(f'(H:{active_qubits[0]})'))
     head = [active_qubits[0]]
     tail = active_qubits[1:]
 
@@ -48,10 +48,7 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
 
     # Step 4: Return both sequences in reverse order
     #all_sequences.append([''.join(sequence[::-1]), ''.join(rx_sequence[::-1])])
-
     return sequence
-
-# change this to Pennylane
 
 def parse_circuit(circuit_text, initial_text=""):
     """
@@ -92,11 +89,13 @@ def parse_circuit(circuit_text, initial_text=""):
             gates.append(qp.CNOT(wires=[qubit_indices[0], qubit_indices[1]]))
         elif gate_name == "H":
             gates.append(qp.Hadamard(wires=qubit_indices[0]))
+        elif gate_name == "S":
+            gates.append(qp.S(wires=qubit_indices[0]))
         elif gate_name == "MEAS":
             raise ValueError(f"Unsupported gate: {gate_name}")
         else:
             raise ValueError(f"Unsupported gate: {gate_name}")
-
+    print(gates)
     return gates
 
 def flatten_list(nested_list):
@@ -108,3 +107,9 @@ def post_meas_state_gates(outcome, one_ev=-1):
         if oc == one_ev:
             qp.X(i)
 
+class HtimesS:
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, i: int):
+        return qp.prod(qp.Hadamard(i), qp.S(i))

@@ -2,6 +2,8 @@ import pennylane as qp
 import numpy as np
 from abc import ABC, abstractmethod
 from pennylane.operation import Operator
+from typing import List
+import math
 
 class Observable(ABC):
     def __init__(self) -> None:
@@ -25,8 +27,11 @@ class PauliObservable(Observable):
         self.pauli_array = np.array(list(self.pauli_dict.keys()))
         self.qp_obs_list = [qp.Identity, qp.PauliX, qp.PauliY, qp.PauliZ]
         self.obs_array = None
+        self.qubit_obs: List[Operator] =[]
         self.obs = None
         self.obs_string = None
+        self.qubit_trace = None
+        self.tr = None
         if isinstance(init_value, int):
             self.n = init_value
             self.sample()
@@ -41,11 +46,22 @@ class PauliObservable(Observable):
         return self.obs
 
     def compute_obs(self):
-        ops = []
-        for i, op in enumerate(self.obs_array):
-            if op > 0:
-                ops.append(self.qp_obs_list[op](i))
-        self.obs = qp.prod(*ops)
+        self.obs = qp.prod(*self.qubit_wise_obs())
+
+    def qubit_wise_obs(self):
+        if self.qubit_obs is None:
+            self.qubit_obs = [self.qp_obs_list[op](i) for i, op in enumerate(self.obs_array)]
+        return self.qubit_obs
+    
+    def trace(self):
+        return math.prod(*self.qubit_wise_trace())
+        
+    def qubit_wise_trace(self):
+        if self.qubit_trace is None:
+            if self.obs is None:
+                self.compute_obs()
+            self.qubit_trace = [np.trace(op.matrix()) for op in self.qubit_obs]
+        return self.qubit_trace
 
     def sample(self):
         self.obs_array = np.random.randint(0,4,size=(self.n,))
