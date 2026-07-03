@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Any
-from tools.utils import build_parallel_entangler_blocks, post_meas_state_gates, HtimesS
+from tools.utils import build_parallel_entangler_blocks, post_meas_state_gates, parse_circuit, HadjS
 from tools.observable import Observable, PauliObservable
 from tools.state import State, HRState
 import pennylane as qp
@@ -8,6 +8,7 @@ from pennylane.typing import TensorLike
 import numpy as np
 from numpy.typing import NDArray, ArrayLike
 from pennylane.operation import Operator
+from qiskit.quantum_info.random import random_clifford
 
 large_width = 400
 np.set_printoptions(linewidth=large_width)
@@ -118,7 +119,8 @@ class SEEQSTShadow(Shadow):
         # Selective circuit texts - can be modified to improve efficiency
         # circuits = flatten_list(sel_circ_text) 
         # If want to vectorize, need to make the circuits same length and make the circuit function depend on parameters
-        gates = [qp.S(0),qp.RY(1.5707963267948966, wires=[0]), qp.CNOT(wires=[0, 1]), qp.CNOT(wires=[0, 2]), qp.CNOT(wires=[0, 3])]#parse_circuit("".join(sel_circ_text))
+        # gates = [qp.S(0),qp.RY(1.5707963267948966, wires=[0]), qp.CNOT(wires=[0, 1]), qp.CNOT(wires=[0, 2]), qp.CNOT(wires=[0, 3])]#
+        gates = parse_circuit("".join(sel_circ_text))
         # print(gates)
         # print("U:\n", np.round(qp.matrix(qp.adjoint(qp.prod(*gates))),decimals=2))
         for gate in gates:
@@ -131,9 +133,11 @@ class SEEQSTShadow(Shadow):
     # 2 |b_i'><b_i'| - Id/2**n 
     # + 2**(n+1)(|b_i'><b_i'| - |b_i'><b_i'| ) (cancels out (in fact for any pure state)) NOT TRUE!!!
     # TODO: Add identity in some way so that the trace is not ignored
-    def prop_inverse_measurement(self, outcome, ind, obs_list: List[Observable]) -> NDArray:
+    def prop_inverse_measurement(self, outcome, ind, obs_list: List[Observable],
+                                 test_mode=False) -> NDArray:
         estimates = np.zeros((len(obs_list,)))
         for i, obs in enumerate(obs_list):
+
             @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
             def circuit_rho(outcome):
                 post_meas_state_gates(outcome, one_ev=1)
@@ -171,21 +175,21 @@ class SEEQSTShadow(Shadow):
                 return qp.state()
             out1 = circuit_test1(outcome)
             out2 = circuit_test2(outcome)
-            print("Outcome: ", outcome, "\nPM: \n", np.round(np.outer(out1, np.conj(out1)), decimals=2), "\nPM U: \n", 
-                  np.round(np.outer(out2, np.conj(out2)), decimals=2))
+            # print("Outcome: ", outcome, "\nPM: \n", np.round(np.outer(out1, np.conj(out1)), decimals=2), "\nPM U: \n", 
+                  # np.round(np.outer(out2, np.conj(out2)), decimals=2))
             # print(np.round(np.outer(out2, np.conj(out2))@ qp.matrix(obs()), decimals=2))
             # print(obs())
             estimates[i] = 2**(self.n+1)*circuit_rho(outcome) # + (2-2**(self.n+1))*sum_value  # assuming Pauli observable
             # print(outcome, self.indices[ind])
-            # if estimates[i] != 0:
-            print(estimates[i])
+            if test_mode and np.abs(estimates[i]) > 1e-10:
+                print(self.indices[ind], estimates[i])
 
         return estimates
     
     class PauliShadow(Shadow):
         def __init__(self, state: State, gate_indices: List) -> None:
             super().__init__(state, gate_indices)
-            self.Uis = [qp.Hadamard, HtimesS(), qp.Identity]
+            self.Uis = [qp.Hadamard, HadjS(), qp.Identity]
 
         def sample_indices(self, N: int):
             self.indices = np.random.randint(0,3, size=(N, self.n))
@@ -196,24 +200,69 @@ class SEEQSTShadow(Shadow):
                 self.Uis[ind[i]](i)
 
         def prop_inverse_measurement(self, outcome, ind, obs_list: List[PauliObservable]) -> NDArray:
-            # TODO: Adapt the following to pennylane etc
             
             estimates = np.zeros((len(obs_list,)))
             for i, obs in enumerate(obs_list):
                 @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
                 def circuit_rho(outcome):
                     self.rho_pm(outcome, ind)
-                    return obs.qubit_wise_obs()
+                    return [qp.expval(oi) for oi in obs.qubit_wise_obs()]
                 
-                estimates[i] = np.prod(3*circuit_rho(outcome) - np.array(obs.qubit_wise_trace()))         
+                estimates[i] = np.prod(3*circuit_rho(outcome) - np.array(obs.qubit_wise_trace()))
 
-if __name__ == "__main__":
+            return estimates         
+
+    class CliffordShadow(Shadow):
+        def __init__(self, state: State, gate_indices: List) -> None:
+            super().__init__(state, gate_indices)
+            self.Us: List[Operator] = []
+
+        def sample_indices(self, N: int):
+            self.Us = []
+            for _ in range(N):
+                circ = random_clifford(self.n).to_circuit()
+                self.Us.append(qp.from_qiskit(circ))
+            self.indices = np.arange(N)[:, None]
+            return self.indices
+
+        def U(self, ind: ArrayLike):
+            qp.apply(self.Us[ind[0]])
+
+        def prop_inverse_measurement(self, outcome, ind, obs_list: List[Observable]) -> NDArray:
+            
+            estimates = np.zeros((len(obs_list,)))
+            for i, obs in enumerate(obs_list):
+                @qp.qnode(qp.device("default.qubit", wires=range(self.n)))
+                def circuit_rho(outcome):
+                    self.rho_pm(outcome, ind)
+                    return qp.expval(obs())
+                
+                estimates[i] = (2**self.n + 1)*circuit_rho(outcome) - obs.trace()
+
+            return estimates
+
+def test_seeqst_antidiagonal():
     obs = PauliObservable("XXXX")
     state = HRState(4)
     shadow = SEEQSTShadow(state, [0,2**4])
-    ind = [15,1]
-    shadow.indices = np.array([ind])
+    # ind = [15,1]
+    for i in range(16):
+        for j in range(2):
+            ind = [i,j]
+            shadow.indices = np.array([ind])
+            for outcome in np.ndindex((2,2,2,2)):
+                shadow.prop_inverse_measurement(outcome, 0, [obs], test_mode=True)
+    # outcome = np.array([0,1,1,0])
+
+def test_pauli_shadow():
+    pass
+
+def test_clifford_shadow():
+    pass
+
+if __name__ == "__main__":
+    test_seeqst_antidiagonal()
     
-    outcome = np.array([1,1,1,1])
-    shadow.prop_inverse_measurement(outcome, 0, [obs])
+
+    
 

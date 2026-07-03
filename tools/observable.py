@@ -14,6 +14,10 @@ class Observable(ABC):
         pass
 
     @abstractmethod
+    def trace(self) -> float:
+        pass
+
+    @abstractmethod
     def get_name(self) -> str:
         pass
 
@@ -49,7 +53,7 @@ class PauliObservable(Observable):
         self.obs = qp.prod(*self.qubit_wise_obs())
 
     def qubit_wise_obs(self):
-        if self.qubit_obs is None:
+        if len(self.qubit_obs) == 0:
             self.qubit_obs = [self.qp_obs_list[op](i) for i, op in enumerate(self.obs_array)]
         return self.qubit_obs
     
@@ -66,6 +70,7 @@ class PauliObservable(Observable):
     def sample(self):
         self.obs_array = np.random.randint(0,4,size=(self.n,))
         self.obs = None
+        self.qubit_obs = []
 
     def get_name(self):
         return "".join(self.pauli_array[self.obs_array])

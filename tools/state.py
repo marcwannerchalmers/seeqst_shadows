@@ -21,7 +21,7 @@ class State(ABC):
 class HRState(State):
     def __init__(self, n) -> None:
         super().__init__(n)
-        self.state_dm: TensorLike = TensorLike()
+        self.state_dm: TensorLike = []
         self.sample_state()
 
     def sample_state(self):

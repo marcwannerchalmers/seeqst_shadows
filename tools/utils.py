@@ -20,19 +20,31 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
     active_qubits = [i for i, bit in enumerate(bin_str[::1]) if bit == '1']  # LSB = qubit 0
     # print(bin_str, active_qubits)
     if not active_qubits: # here, one simply seems to measure computational basis
-        return '' # No gates needed
+        return [] # No gates needed
 
     sequence = []
 
+    """sequence.append(str(f'(H:{active_qubits[0]})'))
+    if xy_ind == 1:
+        sequence.append(str(f'(Sdag:{active_qubits[0]})'))"""
+
     # Step 1: Initial rotation on first qubit (arbitrary choice)
     XY = "X" if xy_ind == 0 else "Y"
-    sequence.append(str(f'(R{XY}90:{active_qubits[0]})'))
+    if xy_ind == 1:
+        sequence.append(str(f'(S:{active_qubits[0]})'))
+    sequence.append(str(f'(H:{active_qubits[0]})'))
+
+    # sequence.append(str(f'(R{XY}90:{active_qubits[0]})'))
+    # basis_gate = "H" if xy_ind == 0 else "RX90"
+    # sequence.append(str(f'({basis_gate}:{active_qubits[0]})'))
     # sequence.append(str(f'(H:{active_qubits[0]})'))
+    # sequence.append(str(f'(S:{active_qubits[0]})'))
+    # sequence.append(str(f'(RY90:{active_qubits[0]})'))
     head = [active_qubits[0]]
     tail = active_qubits[1:]
 
     # Step 2: GHZ layering: use ALL head qubits as controls
-    while tail:
+    """while tail:
         new_tail = []
         for h in head:
             if not tail:
@@ -41,13 +53,19 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
             tgt = tail.pop(0)
             sequence.append(str(f'(CNOT:{h},{tgt})'))
             new_tail.append(tgt)
-        head.extend(new_tail)
+        head.extend(new_tail)"""
+    for h in head:
+        for tgt in tail:
+            sequence.append(str(f'(CNOT:{h},{tgt})'))
 
     # Step 3: Create RX90 version of same circuit
     #rx_sequence = [gate.replace('RY90', 'RX90') for gate in sequence]
 
     # Step 4: Return both sequences in reverse order
     #all_sequences.append([''.join(sequence[::-1]), ''.join(rx_sequence[::-1])])
+    """sequence.append(str(f'(H:{active_qubits[0]})'))
+    if xy_ind == 1:
+        sequence.append(str(f'(Sdag:{active_qubits[0]})'))"""
     return sequence
 
 def parse_circuit(circuit_text, initial_text=""):
@@ -91,11 +109,13 @@ def parse_circuit(circuit_text, initial_text=""):
             gates.append(qp.Hadamard(wires=qubit_indices[0]))
         elif gate_name == "S":
             gates.append(qp.S(wires=qubit_indices[0]))
+        elif gate_name == "Sdag":
+            gates.append(qp.adjoint(qp.S)(wires=qubit_indices[0]))
         elif gate_name == "MEAS":
             raise ValueError(f"Unsupported gate: {gate_name}")
         else:
             raise ValueError(f"Unsupported gate: {gate_name}")
-    print(gates)
+    # print(gates)
     return gates
 
 def flatten_list(nested_list):
@@ -107,9 +127,9 @@ def post_meas_state_gates(outcome, one_ev=-1):
         if oc == one_ev:
             qp.X(i)
 
-class HtimesS:
+class HadjS:
     def __init__(self) -> None:
         pass
 
     def __call__(self, i: int):
-        return qp.prod(qp.Hadamard(i), qp.S(i))
+        return qp.prod(qp.Hadamard(i), qp.adjoint(qp.S)(i))
