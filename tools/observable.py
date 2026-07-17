@@ -1,5 +1,6 @@
 import pennylane as qp
 import numpy as np
+from numpy.typing import ArrayLike
 from abc import ABC, abstractmethod
 from pennylane.operation import Operator
 from typing import List
@@ -22,7 +23,7 @@ class Observable(ABC):
         pass
 
 class PauliObservable(Observable):
-    def __init__(self, init_value) -> None:
+    def __init__(self, init_value, sample_indices: List=[0,4]) -> None:
         super().__init__()
         self.mode = "random"
         self.n = 1
@@ -38,7 +39,9 @@ class PauliObservable(Observable):
         self.tr = None
         if isinstance(init_value, int):
             self.n = init_value
-            self.sample()
+            if not isinstance(sample_indices[0], int):
+                assert len(sample_indices[0] == init_value), "Sample_indices not compatible with observable dimension."
+            self.sample(sample_indices)
         elif isinstance(init_value, str):
             self.n = len(init_value)
             self.obs_array = np.array([self.pauli_dict[val] for val in init_value])
@@ -58,7 +61,7 @@ class PauliObservable(Observable):
         return self.qubit_obs
     
     def trace(self):
-        return math.prod(*self.qubit_wise_trace())
+        return math.prod([*self.qubit_wise_trace()])
         
     def qubit_wise_trace(self):
         if self.qubit_trace is None:
@@ -67,8 +70,9 @@ class PauliObservable(Observable):
             self.qubit_trace = [np.trace(op.matrix()) for op in self.qubit_obs]
         return self.qubit_trace
 
-    def sample(self):
-        self.obs_array = np.random.randint(0,4,size=(self.n,))
+    # sample indices is list of low, high
+    def sample(self, sample_indices: List=[0,4]):
+        self.obs_array = np.random.randint(*sample_indices,size=(self.n,))
         self.obs = None
         self.qubit_obs = []
 

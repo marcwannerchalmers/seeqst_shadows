@@ -30,13 +30,19 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
 
     # Step 1: Initial rotation on first qubit (arbitrary choice)
     XY = "X" if xy_ind == 0 else "Y"
-    if xy_ind == 1:
-        sequence.append(str(f'(S:{active_qubits[0]})'))
+    # if xy_ind == 0:
+        # 
+    """sequence.append(str(f'(S:{active_qubits[0]})'))
     sequence.append(str(f'(H:{active_qubits[0]})'))
+    if xy_ind == 0:
+        sequence.append(str(f'(Sdag:{active_qubits[0]})'))"""
 
-    # sequence.append(str(f'(R{XY}90:{active_qubits[0]})'))
-    # basis_gate = "H" if xy_ind == 0 else "RX90"
+    # for qb in active_qubits:
+        # sequence.append(str(f'(H:{qb})'))
+    sequence.append(str(f'(R{XY}m90:{active_qubits[0]})'))
+    # basis_gate = "H" # if xy_ind == 0 else "RY90"
     # sequence.append(str(f'({basis_gate}:{active_qubits[0]})'))
+    
     # sequence.append(str(f'(H:{active_qubits[0]})'))
     # sequence.append(str(f'(S:{active_qubits[0]})'))
     # sequence.append(str(f'(RY90:{active_qubits[0]})'))
@@ -54,9 +60,14 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
             sequence.append(str(f'(CNOT:{h},{tgt})'))
             new_tail.append(tgt)
         head.extend(new_tail)"""
-    for h in head:
+    """for h in head:
         for tgt in tail:
-            sequence.append(str(f'(CNOT:{h},{tgt})'))
+            sequence.append(str(f'(CNOT:{h},{tgt})'))"""
+
+    head = head[0]
+    for tgt in tail:
+        sequence.append(str(f'(CNOT:{head},{tgt})'))
+        head = tgt
 
     # Step 3: Create RX90 version of same circuit
     #rx_sequence = [gate.replace('RY90', 'RX90') for gate in sequence]
@@ -66,7 +77,7 @@ def build_parallel_entangler_blocks(selective_block, num_qubits, xy_ind: int):
     """sequence.append(str(f'(H:{active_qubits[0]})'))
     if xy_ind == 1:
         sequence.append(str(f'(Sdag:{active_qubits[0]})'))"""
-    return sequence
+    return reversed(sequence)
 
 def parse_circuit(circuit_text, initial_text=""):
     """
@@ -103,6 +114,10 @@ def parse_circuit(circuit_text, initial_text=""):
             gates.append(qp.RX(np.pi/2, wires=qubit_indices[0]))
         elif gate_name == "RY90":
             gates.append(qp.RY(np.pi/2, wires=qubit_indices[0]))
+        elif gate_name == "RYm90":
+            gates.append(qp.RY(-np.pi/2, wires=qubit_indices[0]))
+        elif gate_name == "RXm90":
+            gates.append(qp.RX(-np.pi/2, wires=qubit_indices[0]))
         elif gate_name == "CNOT":
             gates.append(qp.CNOT(wires=[qubit_indices[0], qubit_indices[1]]))
         elif gate_name == "H":
