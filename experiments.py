@@ -1,20 +1,22 @@
 from tools.observable import PauliObservable
-from tools.state import HRState
+from tools.state import HRState, HChainGS
 import pennylane as qp
 from shadow import SEEQSTShadow, PauliShadow, CliffordShadow
 from typing import List
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-from tools.estimator import Estimator
+from tools.estimator import Estimator, MedianOfMeans
 import seaborn as sns
 import pandas as pd
+from functools import partial
+import re
 
 # TODO: make such that observables are tied to number of qubits
 class ShadowScalingExperiment:
-    def __init__(self, shadow_cls, state_cls, shadow_args={}, state_args = {}, state_name=None,
+    def __init__(self, shadow_cls, state_cls, shadow_args={}, state_args={}, state_name=None,
                   N_list=[], n_list=[], obs_lists:List[List[PauliObservable]]=[],
-                  gate_indices=lambda n: [0,2**n], estimator=lambda n: Estimator()) -> None:
+                  gate_indices=lambda n: [0,2**n], estimator=lambda n, N: Estimator()) -> None:
         self.shadow_cls = shadow_cls
         self.state_cls = state_cls
         self.shadow_args = shadow_args
@@ -24,6 +26,7 @@ class ShadowScalingExperiment:
         self.observables_list = []
         if len(obs_lists) == len(self.ns):
             self.observables_list = obs_lists
+
         self.preds = np.zeros((len(self.Ns), len(self.ns), len(self.observables_list[0])))
         self.gt = np.zeros_like(self.preds)
         self.gate_indices = gate_indices
@@ -33,7 +36,7 @@ class ShadowScalingExperiment:
     def step(self, N, n, observables):
         # shadow = SEEQSTShadow(HRState(n), [0, 2**n], full_setting=False)
         shadow = self.shadow_cls(self.state_cls(n, **self.state_args), 
-                                 self.gate_indices(n), self.estimator(n), **self.shadow_args)
+                                 self.gate_indices(n), self.estimator(n, N), **self.shadow_args)
         shadow.create(N)
         return shadow.predict(observables), shadow.ground_truth(observables)
     
@@ -85,16 +88,19 @@ class Experiments:
     def __init__(self, scaling_experiments: List[ShadowScalingExperiment],
                  name_dict = None) -> None:
         self.experiments = scaling_experiments
+        for exp in scaling_experiments:
+            exp.run() 
         self.data = self.get_dataframe()
 
     def get_dataframe(self):
         data = {"Shadow model": [], "Observable": [], "Ground truth": [],
-                "Prediction: ": [], "Error": [], "N": [], "n": [], "State": []}
-        for experiment in self.experiments:          
-            for i, (observables, n) in enumerate(zip(experiment.observables_list, experiment.ns)):
+                "Prediction": [], "Error": [], "N": [], "n": [], "State": []}
+        for experiment in self.experiments:        
+            # print(experiment.gt.shape, experiment.preds.shape)  
+            for j, (observables, n) in enumerate(zip(experiment.observables_list, experiment.ns)):
                 for k, obs in enumerate(observables):
-                    for j, N in enumerate(experiment.Ns):
-                        data["Shadow model"].append(str(experiment.shadow_cls))
+                    for i, N in enumerate(experiment.Ns):
+                        data["Shadow model"].append(re.search(r"\.(.*?)\'", str(experiment.shadow_cls))[1])
                         data["Observable"].append(obs.get_name())
                         data["Ground truth"].append(experiment.gt[i,j,k])
                         data["Prediction"].append(experiment.preds[i,j,k])
@@ -105,16 +111,20 @@ class Experiments:
                         data["State"].append(state_name)
 
         return pd.DataFrame(data)
-    
-    def plot(self, x, y, hue=None, index_list=[], path_save=None):
+
+    # partial function with self.data fixed 
+    def plot(self, index_list=[], path_save=None, **lineplot_args):
         data = self.data
         if len(index_list) > 0:
             data = data[index_list]
-        
-        sns.lineplot(data, x=x, y=y, hue=hue)
+        sns.set_style('whitegrid')
+        res = sns.lineplot(data, **lineplot_args)
+        res.set(xscale='log')
         plt.show()
         if path_save is not None:
             plt.savefig(path_save)
+    
+
 
 
 # TODO: Run experiments for the three shadows
@@ -128,6 +138,26 @@ def test_homogenous_paulis():
     experiment.run()
     # experiment.plot()
 
+def test_multiple_hom_paulis():
+    ns = list(range(5,6))
+    Ns = [2**k for k in range(7, 15)]
+    reps = 2
+    state_reps = 1
+    obs_lists = [[PauliObservable(O*2 + "I"*(n-2), name=O) for O in ["X", "Y", "Z"]] for n in ns]
+    state_names = ["HR_state_"+str(i) for i in range(state_reps)]
+    shadow_classes = [SEEQSTShadow, PauliShadow, CliffordShadow]
+    experiments_list = []
+    for shadow_cls in shadow_classes:
+        shadow_args = {"full_setting": False} if shadow_cls == SEEQSTShadow else {}
+        exps = [ShadowScalingExperiment(shadow_cls, HChainGS, shadow_args=shadow_args, state_name=state_names[i],
+                                         N_list=Ns, n_list=ns, obs_lists=obs_lists)#,
+                                         #estimator=lambda n, N: MedianOfMeans(np.sqrt(N))) 
+                                         for i in range(state_reps)]
+        experiments_list.extend(exps)
+    experiments = Experiments(experiments_list)
+    experiments.plot(x="N", y="Error", hue="Observable", style="Shadow model", markers=['o']*len(shadow_classes))
+
+
 def test_XY_combos():
     # TODO: Code up experiment for only the antidiagonal block of SEEQST shadow
     ns = list(range(4,5))
@@ -135,20 +165,21 @@ def test_XY_combos():
     reps = 2
     state_reps = 2
     sample_idx_list = [[2*np.ones((n,)), 4*np.ones((n,))] for n in ns]
-    obs_list = [[PauliObservable(n, sample_indices) for _ in range(reps)] for n, sample_indices in 
+    obs_lists = [[PauliObservable(n, sample_indices) for _ in range(reps)] for n, sample_indices in 
                  zip(ns, sample_idx_list)]
     state_names = ["HR_state_"+str(i) for i in range(state_reps)]
     shadow_classes = [SEEQSTShadow, PauliShadow, CliffordShadow]
     experiments_list = []
     for shadow_cls in shadow_classes:
-        experiments_list.extend([ShadowScalingExperiment(shadow_cls, HRState, {"full_setting": False}, state_names[i],
-                                         Ns, ns, obs_list) for i in range(state_reps)])
+        exps = [ShadowScalingExperiment(shadow_cls, HRState, shadow_args={"full_setting": False}, state_name=state_names[i],
+                                         N_list=Ns, n_list=ns, obs_lists=obs_lists) for i in range(state_reps)]
+        experiments_list.extend(exps)
     experiments = Experiments(experiments_list)
     # TODO: figure out how to plot this
     # experiments.plot()
 
 def main():
-    test_homogenous_paulis()
+    test_multiple_hom_paulis()
 
 
 if __name__ == "__main__":

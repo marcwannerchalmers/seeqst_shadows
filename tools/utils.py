@@ -148,3 +148,38 @@ class HadjS:
 
     def __call__(self, i: int):
         return qp.prod(qp.Hadamard(i), qp.adjoint(qp.S)(i))
+
+########### For testing, in final implementation, should use Pennylane too #############
+
+X = np.array([[0,1],
+              [1,0]], dtype=np.complex128)
+
+Y = np.array([[0,-1j],
+              [1j,0]], dtype=np.complex128)
+
+Z = np.array([[1,0],
+              [0,-1]], dtype=np.complex128)
+
+I = np.array([[1,0],
+              [0,1]], dtype=np.complex128)
+
+def double_pauli(idx, n, pauli):
+    res = np.array([[1.]], dtype=np.complex128)
+    for i in range(n-2):
+        if i == idx:
+            for j in range(2):
+                res = np.kron(res, pauli/2)
+        res = np.kron(res, I)
+    if idx == n-2:
+        for j in range(2):
+            res = np.kron(res, pauli/2)
+    return res
+
+def HChain(J):
+    n = len(J) + 1
+    res = np.zeros((2**n, 2**n), dtype=np.complex128)
+    for i, Ji in enumerate(J):
+        res += Ji * sum([double_pauli(i, n, P) for P in [X, Y, Z]])
+    return res
+
+###############################

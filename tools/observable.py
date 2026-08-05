@@ -23,7 +23,8 @@ class Observable(ABC):
         pass
 
 class PauliObservable(Observable):
-    def __init__(self, init_value, sample_indices: List=[0,4]) -> None:
+    def __init__(self, init_value, sample_indices: List=[0,4],
+                 name=None) -> None:
         super().__init__()
         self.mode = "random"
         self.n = 1
@@ -34,7 +35,7 @@ class PauliObservable(Observable):
         self.obs_array = None
         self.qubit_obs: List[Operator] =[]
         self.obs = None
-        self.obs_string = None
+        self.obs_string: str = ""
         self.qubit_trace = None
         self.tr = None
         if isinstance(init_value, int):
@@ -46,6 +47,8 @@ class PauliObservable(Observable):
             self.n = len(init_value)
             self.obs_array = np.array([self.pauli_dict[val] for val in init_value])
             self.obs_string = init_value
+
+        self.name = name if name is not None else "".join(self.pauli_array[self.obs_array])
 
     def __call__(self)->Operator:
         if self.obs is None:
@@ -73,8 +76,10 @@ class PauliObservable(Observable):
     # sample indices is list of low, high
     def sample(self, sample_indices: List=[0,4]):
         self.obs_array = np.random.randint(*sample_indices,size=(self.n,))
+        self.obs_string = sum(self.pauli_dict[self.pauli_array[i]] 
+                              for i in range(self.obs_array))
         self.obs = None
         self.qubit_obs = []
 
     def get_name(self):
-        return "".join(self.pauli_array[self.obs_array])
+        return self.name
