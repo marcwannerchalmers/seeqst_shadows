@@ -11,12 +11,14 @@ import seaborn as sns
 import pandas as pd
 from functools import partial
 import re
+import time
 
 # TODO: make such that observables are tied to number of qubits
 class ShadowScalingExperiment:
     def __init__(self, shadow_cls, state_cls, shadow_args={}, state_args={}, state_name=None,
                   N_list=[], n_list=[], obs_lists:List[List[PauliObservable]]=[],
-                  gate_indices=lambda n: [0,2**n], estimator=lambda n, N: Estimator()) -> None:
+                  gate_indices=lambda n: [0,2**n], estimator=lambda n, N: Estimator(),
+                  verbose=False) -> None:
         self.shadow_cls = shadow_cls
         self.state_cls = state_cls
         self.shadow_args = shadow_args
@@ -32,28 +34,51 @@ class ShadowScalingExperiment:
         self.gate_indices = gate_indices
         self.estimator = estimator
         self.state_name = state_name
+        self.times = {"Create Shadow": [], "Predict": [], "Compute GT": [], "Total step": []}
+        self.verbose = verbose
 
     def step(self, N, n, observables):
         # shadow = SEEQSTShadow(HRState(n), [0, 2**n], full_setting=False)
         shadow = self.shadow_cls(self.state_cls(n, **self.state_args), 
                                  self.gate_indices(n), self.estimator(n, N), **self.shadow_args)
+        start = time.time()
         shadow.create(N)
-        return shadow.predict(observables), shadow.ground_truth(observables)
+        created = time.time()
+        pred = shadow.predict(observables)
+        predicted = time.time()
+        gt = shadow.ground_truth(observables)
+        end = time.time()
+        self.times["Create Shadow"].append(created - start)
+        self.times["Predict"].append(predicted - created)
+        self.times["Compute GT"].append(end - predicted)
+        return pred, gt
     
     def run(self, path_save = None):
         save_state = False
+        experiments_loaded = False
         if path_save is not None:
             if os.path.isfile(path_save):
                 self.load_results(path_save)
+                experiments_loaded = True
             else:
+                if self.verbose:
+                    print("Experiments will be saved as {}".format(path_save))
                 save_state = True
 
-        for i, N in enumerate(self.Ns):
-            for j, (n, observables) in enumerate(zip(self.ns, self.observables_list)):
-                self.preds[i,j], self.gt[i,j] = self.step(N, n, observables)
-                print(f"N: {N}, n: {n}, first observable: {observables[0].get_name()}, \
-                      GT: {self.gt[i,j]}, Pred: {self.preds[i,j]}")
-
+        if not experiments_loaded:
+            # This block can potentially be jaxed
+            for i, N in enumerate(self.Ns):
+                for j, (n, observables) in enumerate(zip(self.ns, self.observables_list)):
+                    start = time.time()
+                    self.preds[i,j], self.gt[i,j] = self.step(N, n, observables)
+                    end = time.time()
+                    self.times["Total step"].append(end - start)
+                    if self.verbose:
+                        print(f"N: {N}, n: {n}, first observable: {observables[0].get_name()}, \
+                            GT: {self.gt[i,j]}, Pred: {self.preds[i,j]}")
+                        print("Time taken: " + "".join(["{}: {} s, ".format(key, value[-1]) 
+                                                   for key, value in self.times.items()]))
+                    
         if save_state:
             self.save_results(path_save)
 
@@ -150,7 +175,7 @@ def test_multiple_hom_paulis():
     for shadow_cls in shadow_classes:
         shadow_args = {"full_setting": False} if shadow_cls == SEEQSTShadow else {}
         exps = [ShadowScalingExperiment(shadow_cls, HChainGS, shadow_args=shadow_args, state_name=state_names[i],
-                                         N_list=Ns, n_list=ns, obs_lists=obs_lists)#,
+                                         N_list=Ns, n_list=ns, obs_lists=obs_lists, verbose=True)#,
                                          #estimator=lambda n, N: MedianOfMeans(np.sqrt(N))) 
                                          for i in range(state_reps)]
         experiments_list.extend(exps)

@@ -100,7 +100,6 @@ class SEEQSTShadow(Shadow):
                  full_setting=False) -> None:
         super().__init__(state, gate_indices, estimator)
         self.full_setting = full_setting
-        self.ztype_estimator = self.estimator.createZtype()
     
     def sample_indices(self, N: int):
         init_indices = super().sample_indices(N)
@@ -112,31 +111,7 @@ class SEEQSTShadow(Shadow):
             a1 = np.random.randint(0,2, size=init_indices.shape)
             self.indices = np.stack([init_indices, a1], axis=1)
 
-        self.ztype_estimator.set_setup(self.n, a1)
         return self.indices
-
-    def predict(self, obs_list: List[PauliObservable])->NDArray:    
-        obs, obs_ztype, idx_obs, idx_obs_ztype = self.split_ztype(obs_list)
-        preds = self.compute_preds(obs)
-        preds_ztype = self.compute_preds(obs_ztype)
-        res = np.concatenate([self.estimator(preds), self.ztype_estimator(preds_ztype)], axis=-1)
-        res_indices = np.concatenate([idx_obs, idx_obs_ztype])
-        return res[res_indices]
-
-    def split_ztype(self, obs_list):
-        obs_ztype = []
-        obs = []
-        idx_obs = []
-        idx_obs_ztype = []
-        for i, O in enumerate(obs_list):
-            if "X" in O.obs_string or "Y" in O.obs_string:
-                obs.append(O)
-                idx_obs.append(i)
-            else:
-                obs_ztype.append(O)
-                idx_obs_ztype.append(i)
-
-        return obs, obs_ztype, idx_obs, idx_obs_ztype
 
     def U(self, ind: ArrayLike)->None:
         block_idx, xy = ind
@@ -154,6 +129,7 @@ class SEEQSTShadow(Shadow):
         for i, obs in enumerate(obs_list):
             if not isinstance(obs, PauliObservable):
                 raise NotImplementedError()
+                
             
             @qp.qnode(qp.device("lightning.qubit", wires=range(self.n)))
             def circuit_rho(outcome):
@@ -174,8 +150,9 @@ class SEEQSTShadow(Shadow):
             for x, p in enumerate(probs):
                 sum_value += p * np.real(qp.matrix(obs())[x,x])
                 print(sum_value)"""
-
-            estimates[i] = 2**(self.n+1)*circuit_rho(outcome) # + (2-2**(self.n+1))*sum_value  # assuming Pauli observable
+            # Migrate adapted to Z-type observable here
+            exp = 0 if obs.is_ZType() else self.n
+            estimates[i] = 2**(exp+1)*circuit_rho(outcome) # + (2-2**(self.n+1))*sum_value  # assuming Pauli observable
             if test_mode and np.abs(estimates[i]) > 1e-10:
                 print(self.indices[ind], estimates[i])
 

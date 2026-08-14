@@ -83,3 +83,10 @@ class PauliObservable(Observable):
 
     def get_name(self):
         return self.name
+
+    def is_ZType(self):
+        if "X" in self.obs_string or "Y" in self.obs_string:
+            return False
+        else:
+            return True
+        
