@@ -5,6 +5,10 @@ import numpy as np
 from abc import ABC, abstractmethod
 from pennylane.operation import Operator
 import qutip as qt
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jaxed.tools.utils import HChain
 import jax 
 from jax import random, Array
@@ -21,12 +25,12 @@ class State(ABC, struct.PyTreeNode):
 
     @classmethod
     @abstractmethod
-    def sample(cls, n, key, *args, **argv)->State:
+    def sample(cls, key, n, *args, **argv)->State:
         pass
 
     @classmethod
     @abstractmethod
-    def create(cls, n, *args, **argv)->State:
+    def create(cls, *args, **argv)->State:
         pass
 
     @abstractmethod
@@ -41,17 +45,17 @@ class State(ABC, struct.PyTreeNode):
 # This class of states can only be accessed randomly
 class HRState(State):
 
-    key: Array
     state_dm: Array
 
     @classmethod
-    def sample(cls, n: int, key: Array):
+    def sample(cls, key: Array, n: int):
         state = cls.sample_state(n, key)
-        return cls(n=n, key=key, state_dm=state)
+        return cls(n=n, state_dm=state)
 
     @classmethod
-    def create(cls, n, *args, **argv) -> State:
-        raise NotImplementedError("Can only be sampled")
+    def create(cls, statevec: Array) -> State:
+        n = jnp.log2(statevec.shape[0]).astype(int)
+        return cls(n=n, state_dm=statevec)
 
     @staticmethod
     def sample_state(n, key: Array):
@@ -72,19 +76,34 @@ class HChainGS(State):
     state_dm: Array
 
     @classmethod
-    def sample(cls, n: int, key: Array, lower: float=-1, upper: float=1):
+    def sample(cls, key: Array, n: int, lower: float=-1, upper: float=1):
         J = random.uniform(key, (n-1,), lower, upper)
         return cls.create(n, J)
 
     @classmethod
-    def create(cls, n, J):
+    def create(cls, J: Array):
         H = HChain(J).matrix()
         _, evec = jnp.linalg.eigh(H)
         state = evec[:,-1]
-        return cls(n=n, state_dm=state)
+        return cls(n=J.shape[0] + 1, state_dm=state)
 
     def __call__(self) -> Operator:
         return qp.StatePrep(self.state_dm, wires=range(self.n))
-        
+
+def test():
+    n = 5
+    state = HRState.sample(jax.random.PRNGKey(1234), n)
+    @qp.qjit
+    @qp.set_shots(1)
+    @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+    def circuit(state: State):
+        state()
+        # U(ind)
+        return qp.sample(wires=list(range(state.n)))
 
     
+
+    print(circuit(state))
+
+if __name__ == "__main__":
+    test()

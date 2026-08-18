@@ -80,7 +80,6 @@ class PauliObservable(Observable):
         return qp.sum(*[op_param[i]*self.ztype_obs_list[i] for i in range(self.n+1)]) # type: ignore[reportCallIssue]
     
     def circuit(self) -> Operator:
-        params_onehot = jax.nn.one_hot(self.params, 4)
         for i in range(self.n):
             if self.params[i] == 1:
                 qp.Hadamard(i)
@@ -122,6 +121,7 @@ class PauliObservable(Observable):
     def _name(cls, param: Array) -> str:
         return cls.obs_string(param)
 
+    @property
     def is_ZType(self) -> Array:
         return jnp.logical_not(jnp.isin(jnp.array([1,2]), self.params).any())
 
