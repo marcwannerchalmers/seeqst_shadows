@@ -21,10 +21,12 @@ from pennylane.operation import Operator
 from jaxed.tools.estimator import Estimator, MedianOfMeans
 import jax 
 from jax import numpy as jnp
-from jax import Array, vmap, random
+from jax import Array, random, jit
 from flax import struct
 from jax.lax import cond
-from functools import partial
+from functools import partial, lru_cache
+import time
+import catalyst
 
 large_width = 400
 np.set_printoptions(linewidth=large_width)
@@ -45,14 +47,14 @@ class Shadow(ABC, struct.PyTreeNode):
 
     # create shadow from N state samples
     @classmethod
-    def init(cls, key: Array, n: int, N: int, N_rho: int=1, 
+    def init(cls, key: Array, n: int, N: int, N_state_reps: int=1, 
                 sample_idx_range: Array=jnp.array([]), 
                estimator: Estimator=Estimator(),
                *args, **kwargs):
 
-        keys = random.split(key, N_rho)
+        keys = random.split(key, N_state_reps)
         in_axes = tuple([0]+[None]*(2+len(args)+len(kwargs)))
-        indices = vmap(cls.sample_indices, in_axes=in_axes)(keys, (N,n), sample_idx_range)
+        indices = jax.vmap(cls.sample_indices, in_axes=in_axes)(keys, (N,n), sample_idx_range)
 
         kwargs.pop('n', None)
         kwargs.pop('N', None)
@@ -62,7 +64,7 @@ class Shadow(ABC, struct.PyTreeNode):
         if not hasattr(cls, "Udag_fun"):
             cls.Udag_fun = qp.adjoint(cls.U_fun)
 
-        shape = (N, n) if N_rho == 1 else (N_rho, N, n)
+        shape = (N, n) if N_state_reps == 1 else (N_state_reps, N, n)
         instance = cls(estimator=estimator, 
                    sample_idx_range=sample_idx_range, 
                    indices=indices, outcomes=jnp.empty(shape),
@@ -73,7 +75,7 @@ class Shadow(ABC, struct.PyTreeNode):
 
     # use this to replace the outcomes
     def sample(self, state):
-        outcomes = vmap(self.sample_circuit, in_axes=(0,None))(self.indices, state)
+        outcomes = self.sample_circuit(self.indices, state)
 
         return outcomes
 
@@ -82,8 +84,8 @@ class Shadow(ABC, struct.PyTreeNode):
         return self.estimator(preds)
 
     def compute_preds(self, obs: Observable)->Array:
-        preds = vmap(self.prop_inverse_measurement, 
-                     in_axes=(0,0,None))(self.outcomes, 
+        preds = jax.vmap(self.prop_inverse_measurement, 
+                     in_axes=(len(self.outcomes.shape)-2,0,None))(self.outcomes, 
                                          jnp.arange(self.N),
                                          obs)
 
@@ -121,19 +123,36 @@ class Shadow(ABC, struct.PyTreeNode):
     def prop_inverse_measurement(self, outcome: Array, ind: Array, obs: Observable)->Array:
         pass
 
-
-    def sample_circuit(self, ind: Array, state: State):
-
-        @qjit(autograph=True)
+    @staticmethod
+    @lru_cache(None)
+    def _get_sample_circuit(n: int, U_treedef, state_treedef):
+        U_axes = U_treedef.unflatten(
+            [None] * U_treedef.num_leaves
+        )
+        state_axes = state_treedef.unflatten(
+            [None] * state_treedef.num_leaves
+        )
+        # @qjit(autograph=True)
         @qp.set_shots(1)
-        @qp.qnode(qp.device("lightning.qubit", wires=range(self.n)))
+        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
         def circuit(ind, U, state):
             state()
             U(ind)
             return qp.sample()
 
-        return circuit(ind, self.U, state)[0]
-    
+        return qjit(autograph=True)(catalyst.vmap(circuit, in_axes=(0,U_axes,state_axes)))
+
+    def sample_circuit(self, inds: Array, state: State):
+        U_treedef = jax.tree_util.tree_structure(self.U)
+        state_treedef = jax.tree_util.tree_structure(state)
+        def none_tree(x):
+            leaves, treedef = jax.tree_util.tree_flatten(x)
+            return treedef.unflatten([None] * len(leaves))
+        U_axes = none_tree(self.U)
+        state_axes = none_tree(state)
+        circuit = self._get_sample_circuit(self.n, U_treedef, state_treedef)
+        return circuit(inds, self.U, state)[:,0]
+
     def ground_truth(self, obs):
 
         @qjit(autograph=True)
@@ -159,11 +178,11 @@ class SEEQSTShadow(Shadow):
     # First n bits of self.indices are for the block encoding, the last one is for the setting
     # redefine this to avoid an extra pass of n
     @classmethod
-    def create(cls, key: Array, N: int, rho: State, 
+    def init(cls, key: Array, n: int, N: int, N_state_reps: int, 
                sample_idx_range: Array=jnp.array([0,2]), 
                estimator: Estimator=Estimator(), 
                full_setting: bool=False):
-        return super().create(key, N, rho, sample_idx_range, estimator, full_setting=full_setting)
+        return super().init(key, n, N, N_state_reps, sample_idx_range, estimator, full_setting=full_setting)
 
     @classmethod
     def sample_indices(cls, key: Array, shape: tuple[int,...], sample_idx_range, full_setting: bool)->Array:
@@ -229,9 +248,9 @@ class SEEQSTShadow(Shadow):
 class PauliShadow(Shadow):
 
     @classmethod
-    def create(cls, key: Array, N: int, rho: State, 
+    def init(cls, key: Array, n: int, N: int, N_state_reps:int, 
                estimator: Estimator = Estimator(), *args, **kwargs):
-        return super().create(key, N, rho, jnp.array([0,3]), estimator, *args, **kwargs)
+        return super().init(key, n, N, N_state_reps, jnp.array([0,3]), estimator, *args, **kwargs)
 
     @staticmethod
     def U_fun(ind: Array, **kwargs):
@@ -360,7 +379,7 @@ def test_clifford_shadow():
 def test_tools():
     pass
 
-def test_shadow():
+def test_seeqst_shadow():
     paulis = ["XXYY","ZZII"]
     n = 4
     N = 10
@@ -391,17 +410,34 @@ def test_clifford_jaxed():
 
 def test_pauli_jaxed():
     paulis = ["XXYY","ZZII"]
-    n = 4
-    N = 10
+    n = 10
+    N = 10000
+    N_state_reps = 10
     params = jnp.stack([PauliObservable.get_param(pauli) for pauli in paulis])
     obs = PauliObservable(params)
-    print(obs.get_name())
     key = jax.random.PRNGKey(1234)
-    state = HRState.init_random(key, n)
-    shadow = CliffordShadow.create(key, N, state)
+    states = HRState.init_random(key, N_state_reps, n)
+    start = time.time()
+    shadow = PauliShadow.init(key, n, N, N_state_reps)
+    outcomes_fun = jax.jit(jax.vmap(lambda shadow, state: shadow.sample(state), in_axes=(0,0)))
+    print("started timing")
+    outcomes = outcomes_fun(shadow,states)
+    shadow = shadow.replace(outcomes=outcomes)
+    end = time.time()
+    print(end-start)
+    start = time.time()
+    outcomes = outcomes_fun(shadow,states)
+    shadow = shadow.replace(outcomes=outcomes)
+    end = time.time()
+    print(end-start)
+    print("sampled")
     # shadow.prop_inverse_measurement(jnp.ones(n,), 0, obs)
-    # pred = vmap(shadow.predict)(obs)
-    # print(pred)
+    start = time.time()
+    pred_fun = lambda shadow, obs: shadow.predict(obs)
+    pred_fun = jax.jit(vmap(vmap(pred_fun, in_axes=(None, 0)), in_axes=(0,None)))
+    print(pred_fun(shadow, obs))
+    end = time.time()
+    print(end-start)
 
 
 ################################

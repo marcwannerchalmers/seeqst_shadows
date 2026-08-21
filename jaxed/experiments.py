@@ -2,7 +2,7 @@ from typing import List, Type
 import numpy as np
 from jax import numpy as jnp
 from jax import random, vmap
-from jax.tree_util import tree_map
+from jax import tree
 import os
 import matplotlib.pyplot as plt
 
@@ -66,13 +66,32 @@ class ShadowScalingExperiment:
             # sampling
             sample_fun = lambda shadow, states: vmap(shadow.sample)(states)
             replace_fun = lambda shadow, outcomes: shadow.replace(outcomes=outcomes)
-            outcomes = tree_map(sample_fun, self.shadows, self.states) 
-            self.shadows = tree_map(replace_fun, self.shadows, outcomes)
+            outcomes = tree.map(sample_fun, self.shadows, self.states) 
+            self.shadows = tree.map(replace_fun, self.shadows, outcomes)
 
             # prediction
-            """pred_fun = lambda shadow, 
-            obser
-            preds = """
+            obs_list = self.observables_list
+            # Adapt observable 
+            # Case 1: Same observables for each N --> list of len(ns) observables
+            if not isinstance(self.observables_list[0], list):
+                obs_list = [[obs for _ in range(len(self.Ns))] for obs in self.observables_list]
+            # Case 2: Same observables for each state 
+            # --> shape_0 of params does not equal N_states for ALL observables
+            case2_fun = lambda obs: obs.params.shape[0] == self.N_state_reps
+            case2 = not jnp.array(tree.map(case2_fun, obs_list)).all()
+            obs_axes = (None, 0) if case2 else (0,1)
+            pred_fun = lambda shadow, obs: shadow.predict(obs)
+            pred_fun = vmap(vmap(pred_fun, 
+                                 in_axes=(None, obs_axes[0])), 
+                                 in_axes=(0,obs_axes[1]))
+
+            gt_fun = lambda shadow, obs: shadow.ground_truth(obs)
+            gt_fun = vmap(vmap(gt_fun, 
+                                 in_axes=(None, obs_axes[0])), 
+                                 in_axes=(0,obs_axes[1]))
+            
+            self.preds = jnp.array(tree.map(gt_fun, self.shadows, obs_list))
+            self.gts = jnp.array(tree.map(gt_fun, self.shadows, obs_list))
                     
         if save_state:
             self.save_results(path_save)

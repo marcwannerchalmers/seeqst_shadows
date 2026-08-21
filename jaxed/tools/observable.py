@@ -92,7 +92,7 @@ class PauliObservable(Observable):
     @classmethod
     def get_param(cls, pauli_str: str):
         obs_array = jnp.array([cls.pauli_dict[val] for val in pauli_str])
-        return obs_array # vmap(cls.to_one_hot)(obs_array)
+        return obs_array 
 
     def op(self) -> Operator:
         params_onehot = jax.nn.one_hot(self.params, 4)

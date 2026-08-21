@@ -164,7 +164,7 @@ def test_homogenous_paulis():
     # experiment.plot()
 
 def test_multiple_hom_paulis():
-    ns = list(range(5,6))
+    ns = list(range(10,11))
     Ns = [2**k for k in range(7, 15)]
     reps = 2
     state_reps = 1
@@ -185,7 +185,7 @@ def test_multiple_hom_paulis():
 
 def test_XY_combos():
     # TODO: Code up experiment for only the antidiagonal block of SEEQST shadow
-    ns = list(range(4,5))
+    ns = list(range(10,11))
     Ns = [2**k for k in range(12, 13)]
     reps = 2
     state_reps = 2

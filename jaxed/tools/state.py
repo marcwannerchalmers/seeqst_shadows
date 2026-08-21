@@ -11,10 +11,11 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jaxed.tools.utils import HChain
 import jax 
-from jax import random, Array, vmap
+from jax import random, Array, vmap, jit
 from jax.random import PRNGKey
 from jax import numpy as jnp
 from flax import struct
+from functools import partial
 
 # Could also have a separate sampler for the parameters,
 # however this seems to be an overkill for now.
@@ -62,6 +63,7 @@ class HRState(State):
         return cls(state_dm=statevecs)
 
     @staticmethod
+    @partial(jit, static_argnums=(1,))
     def sample_state(key: Array, n):
         key_r, key_i = jax.random.split(key)
 
