@@ -1,10 +1,11 @@
-from qiskit._accelerate.synthesis.clifford import random_clifford_tableau
-from numpy.random import default_rng
-import numpy as np
+import pennylane as qml
+from catalyst import qjit
 
-if __name__ == "__main__":
-    n = 5
-    rng = default_rng()
-    seed = rng.integers(100000, size=1, dtype=np.uint64)[0]
-    tableau = random_clifford_tableau(n, seed=seed)
-    print(tableau)
+dev = qml.device("lightning.qubit", wires=2)
+
+@qjit
+@qml.qnode(dev)
+def circuit():
+    return qml.expval(qml.PauliZ(0))
+
+print(circuit())

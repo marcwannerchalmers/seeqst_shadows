@@ -11,7 +11,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jaxed.tools.utils import HChain
 import jax 
-from jax import random, Array
+from jax import random, Array, vmap
 from jax.random import PRNGKey
 from jax import numpy as jnp
 from flax import struct
@@ -21,20 +21,24 @@ from flax import struct
 
 # n: number of qubits
 class State(ABC, struct.PyTreeNode):
-    n: int = struct.field(pytree_node=False)
 
     @classmethod
     @abstractmethod
-    def sample(cls, key, n, *args, **argv)->State:
+    def init_random(cls, key: Array, N_state: int, n: int, *args, **argv)->State:
         pass
 
     @classmethod
     @abstractmethod
-    def create(cls, *args, **argv)->State:
+    def init(cls, *args, **argv)->State:
         pass
 
     @abstractmethod
-    def __call__(self) -> Operator:
+    def __call__(self) -> None:
+        pass
+
+    @property
+    @abstractmethod
+    def n(self)->int:
         pass
 
     def get_name(self) -> str:
@@ -48,17 +52,17 @@ class HRState(State):
     state_dm: Array
 
     @classmethod
-    def sample(cls, key: Array, n: int):
-        state = cls.sample_state(n, key)
-        return cls(n=n, state_dm=state)
+    def init_random(cls, key: Array, N_state: int, n: int):
+        keys = random.split(key, N_state)
+        state = vmap(cls.sample_state, in_axes=(0, None))(keys, n)
+        return cls(state_dm=state)
 
     @classmethod
-    def create(cls, statevec: Array) -> State:
-        n = jnp.log2(statevec.shape[0]).astype(int)
-        return cls(n=n, state_dm=statevec)
+    def init(cls, statevecs: Array) -> State:
+        return cls(state_dm=statevecs)
 
     @staticmethod
-    def sample_state(n, key: Array):
+    def sample_state(key: Array, n):
         key_r, key_i = jax.random.split(key)
 
         z = (
@@ -68,38 +72,46 @@ class HRState(State):
 
         return z / jnp.linalg.norm(z)
 
-    def __call__(self) -> Operator:
-        return qp.StatePrep(self.state_dm, wires=range(self.n))
+    @property
+    def n(self) -> int:
+        return int(np.log2(self.state_dm.shape[-1]))
+
+    def __call__(self):
+        qp.StatePrep(self.state_dm, wires=range(self.n))
 
 
 class HChainGS(State):
     state_dm: Array
 
     @classmethod
-    def sample(cls, key: Array, n: int, lower: float=-1, upper: float=1):
+    def init_random(cls, key: Array, n: int, lower: float=-1, upper: float=1):
         J = random.uniform(key, (n-1,), lower, upper)
-        return cls.create(n, J)
+        return cls.init(J)
 
     @classmethod
-    def create(cls, J: Array):
+    def init(cls, J: Array):
         H = HChain(J).matrix()
         _, evec = jnp.linalg.eigh(H)
         state = evec[:,-1]
-        return cls(n=J.shape[0] + 1, state_dm=state)
+        return cls(state_dm=state)
 
-    def __call__(self) -> Operator:
-        return qp.StatePrep(self.state_dm, wires=range(self.n))
+    @property
+    def n(self) -> int:
+        return int(np.log2(self.state_dm.shape[-1]))
+
+    def __call__(self):
+        qp.StatePrep(self.state_dm, wires=range(self.n))
 
 def test():
     n = 5
-    state = HRState.sample(jax.random.PRNGKey(1234), n)
+    state = HRState.init_random(jax.random.PRNGKey(1234), n)
     @qp.qjit
     @qp.set_shots(1)
     @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
     def circuit(state: State):
         state()
         # U(ind)
-        return qp.sample(wires=list(range(state.n)))
+        return qp.init_random(wires=list(range(state.n)))
 
     
 

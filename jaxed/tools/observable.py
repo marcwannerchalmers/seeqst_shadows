@@ -19,20 +19,28 @@ import qutip as qt
 # Remove lazy evaluations etc, design as partly a 'translator class' with static methods, partly as model class
 
 class Observable(ABC, struct.PyTreeNode):
-    params: Array
-    n: int = struct.field(pytree_node=False)
-    name_fun: Callable = struct.field(pytree_node=False,
+    params: Array # needs to be the dimension that it would be if this was an object containing multiple observables
+    name_fun: Callable | None = struct.field(pytree_node=False,
                              default=None)
+
+    @classmethod
+    def init(cls, init_params, name_fun=None):
+        return cls(init_params, name_fun)
 
     @abstractmethod
     def op(self) -> Operator:
         pass
 
-    def circuit(self) -> Operator:
+    def circuit(self) -> None:
         pass
 
     @abstractmethod
     def trace(self) -> Array:
+        pass
+
+    @property
+    @abstractmethod
+    def n(self) -> int:
         pass
 
     @classmethod
@@ -40,11 +48,11 @@ class Observable(ABC, struct.PyTreeNode):
     def _name(cls, param: Array) -> str:
         pass
 
-    def get_name(self) -> str:
+    def get_name(self) -> List[str]:
         if self.name_fun is None:
-            return self._name(self.params)
+            return [self._name(param) for param in self.params]
         else:
-            return self.name_fun()
+            return [self.name_fun(param) for param in self.params]
 
 QP_OBS_LIST = [qp.Identity, qp.PauliX, qp.PauliY, qp.PauliZ]
 
@@ -56,17 +64,30 @@ class PauliObservable(Observable):
     matrix_list: ClassVar[Array] = jnp.array([op(0).matrix() for op in QP_OBS_LIST])
     ztype_obs_list: ClassVar[List] = struct.field(pytree_node=False, init=False)
 
-    def __post_init__(self):
-        object.__setattr__(self, "ztype_obs_list", 
-                           list(reversed([qp.Identity()] + \
-                            [qp.prod(*[qp.PauliZ(j) 
-                            for j in range(self.n-1,i-1,-1)]) for i in range(self.n-1,-1,-1)]))) # type: ignore[reportCallIssue]
+    @classmethod
+    def init(cls, init_params, name_fun=None):
+        params = jnp.stack([cls.get_param(param) for param in init_params])
+        instance = super().init(params, name_fun)
+        n = params.shape[-1]
+        ztype_obs_list = list(reversed([qp.Identity(0)] + \
+                                    [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
+                                    for j in range(n-1,i-1,-1)]) 
+                                    for i in range(n-1,-1,-1)]))
+        instance.replace(ztype_obs_list=ztype_obs_list)
+        return instance
         
     @classmethod
-    def sample_params(cls, sample_indices: List, n: int=0, N: int=1, key=None):
-        obs_array = cls.sample(key, n, N, sample_indices)
-
-        return obs_array
+    def init_random(cls, key, sample_indices: List=[0,4], n: int=1, N: int=1,
+                    name_fun=None):
+        params = cls.sample(key, n, N, sample_indices)
+        instance = super().init(params, name_fun)
+        n = params.shape[-1]
+        ztype_obs_list = list(reversed([qp.Identity(0)] + \
+                                    [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
+                                    for j in range(n-1,i-1,-1)]) 
+                                    for i in range(n-1,-1,-1)]))
+        instance.replace(ztype_obs_list=ztype_obs_list)
+        return instance
 
     @classmethod
     def get_param(cls, pauli_str: str):
@@ -79,12 +100,12 @@ class PauliObservable(Observable):
         op_param = jax.nn.one_hot(n_identity, self.n+1)
         return qp.sum(*[op_param[i]*self.ztype_obs_list[i] for i in range(self.n+1)]) # type: ignore[reportCallIssue]
     
-    def circuit(self) -> Operator:
+    def circuit(self) -> None:
         for i in range(self.n):
             if self.params[i] == 1:
                 qp.Hadamard(i)
             elif self.params[i] == 2:
-                qp.adjoint(qp.S)(i)
+                qp.adjoint(qp.S)(i) # type: ignore[reportCallIssue]
                 qp.Hadamard(i)
 
         sorted_indices = jnp.argsort(self.params)
@@ -96,6 +117,7 @@ class PauliObservable(Observable):
 
     def qubit_wise_obs(self) -> List[Operator]:
             params_onehot = jax.nn.one_hot(self.params, 4)
+
             return [qp.sum(*[params_onehot[i, j] * self.qp_obs_list[j](i) # type: ignore[reportCallIssue]
                                      for j in range(4)])
                                      for i in range(self.n)]
@@ -120,6 +142,10 @@ class PauliObservable(Observable):
     @classmethod
     def _name(cls, param: Array) -> str:
         return cls.obs_string(param)
+
+    @property
+    def n(self) -> int:
+        return self.params.shape[-1]
 
     @property
     def is_ZType(self) -> Array:
