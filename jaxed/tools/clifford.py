@@ -57,18 +57,18 @@ class Tableau(struct.PyTreeNode):
             self,
         )
 
-    def CNOT(self, i: int, j: int, condition: Array=jnp.array(True)):
+    def CNOT(self, c: int | Array, t: int | Array, condition: Array=jnp.array(True)):
         return cond(
             condition,
-            lambda s: s._CNOT(i,j),
+            lambda s: s._CNOT(c,t),
             lambda s: s,
             self,
         )
 
-    def CZ(self, i: int, j: int, condition: Array=jnp.array(True)):
+    def CZ(self, c: int | Array, t: int | Array, condition: Array=jnp.array(True)):
         return cond(
             condition,
-            lambda s: s._CZ(i,j),
+            lambda s: s._CZ(c,t),
             lambda s: s,
             self,
         )
@@ -113,8 +113,32 @@ class Tableau(struct.PyTreeNode):
         
         return self.replace(tableau=tableau)
 
+    def MultiPauliRot(self, theta: Array, paulivector: Array):
+        axis_theta = 0 if theta.ndim > 0 else None # shape is static
+        x, z, r_vec = vmap(self._single_PauliRot, 
+                        in_axes=(axis_theta, 0,1,1),
+                        out_axes=(1,1,1))(theta,
+                                          paulivector, 
+                                        self.tableau[:,:self.n],
+                                        self.tableau[:,self.n:])
+
+        tableau = jnp.concatenate([x,z], axis=1)
+        r = (self.r + jnp.sum(r_vec, axis=1)) % 2
+        return self.replace(tableau=tableau, r=r)
+
+    def PauliRot(self, i: Array, theta: Array, pauli: Array):
+        x, z, r = self._single_PauliRot(theta,
+                                        pauli,
+                                        self.tableau[:,i],
+                                        self.tableau[:,i+self.n])
+
+        tableau = self.tableau.at[:,i].set(x)
+        tableau = tableau.at[:,i+self.n].set(z)
+        r = (self.r + r) % 2
+        return self.replace(tableau=tableau, r=r)
+
     def MultiPauli(self, paulivector: Array):
-        r_vec = vmap(self._single_Pauli, 
+        _, _, r_vec = vmap(self._single_Pauli, 
                      in_axes=(0,1,1),
                      out_axes=1)(paulivector, 
                                 self.tableau[:,:self.n],
@@ -133,7 +157,7 @@ class Tableau(struct.PyTreeNode):
 
         return self.replace(tableau=tableau, r=r)
 
-    def _CNOT(self, control: int, target: int):
+    def _CNOT(self, control: int | Array, target: int | Array):
         xi = self.tableau[:,control]
         zi = self.tableau[:,control+self.n]
         xj = self.tableau[:,target]
@@ -192,6 +216,21 @@ class Tableau(struct.PyTreeNode):
                     xi, zi)
 
     @staticmethod
+    def _single_PauliRot(theta: Array, pauli: Array, xi: Array, zi: Array):
+        r90 = lambda: Tableau._single_Pauli90(pauli, xi, zi)
+        rm90 = lambda: Tableau._single_Paulim90(pauli, xi, zi)
+        rpi = lambda: Tableau._single_Pauli(pauli, xi, zi)
+        rpihalf = lambda: cond(theta == jnp.pi/2, 
+                               r90, 
+                               rm90)
+        admissible = lambda: cond(jnp.abs(theta) == jnp.pi,
+                                  rpi,
+                                  rpihalf)
+        
+        # TODO: Add 0 to the admissible ones
+        return admissible()
+
+    @staticmethod
     def _single_Pauli(pauli: Array, xi: Array, zi: Array):
         # add x-phase for Y, Z
         x_phase = cond(pauli >= 2, 
@@ -205,7 +244,8 @@ class Tableau(struct.PyTreeNode):
                        lambda x: jnp.zeros_like(x),
                        zi)
 
-        return x_phase + z_phase
+        return xi, zi, x_phase + z_phase
+
 
     @staticmethod
     def _single_Pauli90(pauli: Array, xi: Array, zi: Array):
@@ -218,9 +258,10 @@ class Tableau(struct.PyTreeNode):
                       lambda: zi, # Id, RY
                       lambda: (xi + zi) % 2 # RX,RZ
                       )
+        
         r_res = cond(pauli < 2,
                      lambda: cond(pauli == 0,
-                                  lambda: 0, # Id
+                                  lambda: jnp.zeros_like(xi), # Id
                                   lambda: zi*(1-xi) # RX
                                   ),
                      lambda: cond(pauli == 2,
@@ -231,8 +272,33 @@ class Tableau(struct.PyTreeNode):
         
         return xi_res, zi_res, r_res
 
+    @staticmethod
+    def _single_Paulim90(pauli: Array, xi: Array, zi: Array):
+        xi_res = cond(pauli % 3 == 0,
+                        lambda: xi, # Id,RY,RZ
+                        lambda: (xi + zi) % 2 # RX
+                        )
+ 
+        zi_res = cond(pauli <= 1, 
+                        lambda: zi, # Id, RY
+                        lambda: cond(pauli==2, lambda: xi, lambda: (xi + zi) % 2) # RX,RZ
+                        )
+        
+        r_res = cond(pauli < 2,
+                        lambda: cond(pauli == 0,
+                                    lambda: jnp.zeros_like(xi), # Id
+                                    lambda: xi*zi # RX
+                                    ),
+                        lambda: cond(pauli == 2,
+                                    lambda: zi*(1-xi), # RY
+                                    lambda: xi*(1-zi) # RZ
+                                    )
+                                )
+        
+        return xi_res, zi_res, r_res
 
-    def _CZ(self, control: int, target: int):
+
+    def _CZ(self, control: int | Array, target: int | Array):
         xi = self.tableau[:,control]
         zi = self.tableau[:,control+self.n]
         xj = self.tableau[:,target]
@@ -277,6 +343,44 @@ def _tableau_row_to_paulivector(row_x: Array, row_z: Array):
 def _all_equal(x: Array, y: Array):
     return (x == y).all()
 
+# TODO: reverse
+def F(tableau: Tableau, pauli_indices: Array, Gamma: Array, Delta: Array)->Tableau:
+    n = Gamma.shape[0]
+    tableau = tableau.MultiSdag(Gamma.diagonal())
+    tableau = tableau.MultiPauli(pauli_indices)
+    # Delta is lower triangular
+    def body_iCZ(i: int, tableau: Tableau):
+        def body_j(j: int, tableau: Tableau):
+            return tableau.CZ(i,j, Gamma[i,j] == 1) # reversed loop
+
+        return fori_loop(0, i, body_j, tableau)
+
+    tableau = fori_loop(0, n, body_iCZ, tableau)
+
+    # Delta is lower triangular
+    def body_iCX(i: int, tableau: Tableau):
+        def body_j(j: int, tableau: Tableau):
+            return tableau.CNOT(i,j, Delta[i,j] == 1) # reversed loop
+
+        return fori_loop(0, i, body_j, tableau)
+
+    tableau = fori_loop(0, n, body_iCX, tableau)
+    return tableau
+
+# TODO: reverse
+def canonical_form(tableau: Tableau, Gamma: Array, Delta: Array, 
+                   Gammad: Array, Deltad: Array, 
+                   h: Array, pauli_indices: Array,
+                   S: Array) -> Tableau:
+    n = Gamma.shape[0]
+    tableau = F_rev(tableau, jnp.zeros((n,), dtype=int), Gamma, Delta)
+    tableau = tableau.MultiHadamard(h)
+    tableau = tableau.Permute(jnp.argsort(S))
+
+    tableau = F_rev(tableau, pauli_indices, Gammad, Deltad)
+
+    return tableau
+
 def F_rev(tableau: Tableau, pauli_indices: Array, Gamma: Array, Delta: Array)->Tableau:
     n = Gamma.shape[0]
     tableau = tableau.MultiSdag(Gamma.diagonal())
@@ -313,6 +417,31 @@ def canonical_form_rev(tableau: Tableau, Gamma: Array, Delta: Array,
 
     return tableau
 
+def GHZ_type_state_clifford(selective_block: Array,
+                            xy: Array,
+                            tableau: Tableau):
+    
+    n = tableau.n
+    tableau = Tableau.create(n)
+    # Read utils.parallel_entangler_blocks for more explanation
+    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    sorted_vals = selective_block[sorted_indices] 
+
+    # theta = cond(reversed, lambda: -jnp.pi/2, lambda: jnp.pi/2)
+    theta = jnp.pi/2
+    # applies nothing if indices are all 0
+    tableau = tableau.PauliRot(jnp.array(0, dtype=int), 
+                                theta, 
+                                sorted_vals[0]*(xy+1)) 
+
+    def body_fun(i, tableau: Tableau):
+        return tableau.CNOT(sorted_indices[i],
+                            sorted_indices[i+1],
+                            (sorted_vals[i] == 1) & (sorted_vals[i+1] == 1))
+
+    tableau = fori_loop(0, n-1, body_fun, tableau)
+
+    return tableau
 
 def test_sim():
     n = 5

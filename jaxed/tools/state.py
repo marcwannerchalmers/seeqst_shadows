@@ -9,7 +9,8 @@ if __name__ == "__main__":
     import sys
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from jaxed.tools.utils import HChain
+from jaxed.tools.utils import HChain, build_parallel_entangler_blocks
+from jaxed.tools.clifford import GHZ_type_state_clifford, Tableau
 import jax 
 from jax import random, Array, vmap, jit
 from jax.random import PRNGKey
@@ -103,6 +104,33 @@ class HChainGS(State):
 
     def __call__(self):
         qp.StatePrep(self.state_dm, wires=range(self.n))
+
+class GHZType(State):
+    selective_block: Array
+    xy: Array
+
+    @classmethod
+    def init_random(cls, key: Array, N_state: int, n: int) -> State:
+        blocks = random.randint(key, (N_state, n+1), 0, 2)
+        return vmap(cls.init)(blocks[:,:n], blocks[:,n:])
+
+    @classmethod
+    def init(cls, selective_block: Array, xy: Array) -> State:
+        return cls(selective_block=selective_block, xy=xy)
+
+    @property
+    def n(self) -> int:
+        return int(self.selective_block.shape[-1])
+
+    def __call__(self) -> None:
+        build_parallel_entangler_blocks(self.selective_block,
+                                        self.n, 
+                                        self.xy)
+
+    def clifford(self, tableau: Tableau):
+        return GHZ_type_state_clifford(self.selective_block, 
+                                       self.xy,
+                                       tableau)
 
 def test():
     n = 5

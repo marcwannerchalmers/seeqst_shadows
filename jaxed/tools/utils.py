@@ -15,12 +15,8 @@ from jax.lax import cond, fori_loop, scan
 from functools import partial
 
 
-# Credit goes to SEEQST
-# Can probably be tuned
-# Block should already be a binary array
-# n is a static argument
-def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Array,
-                                    reversed=False):
+
+def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Array):
     """
     Build parallel GHZ-style entangling gate sequences for A SINGLE selective block.
     """
@@ -33,20 +29,46 @@ def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Arra
     
     # second predicate ensures that only the 'zero' setting is sampled for the Z-type block
     # RXY = qp.RX if xy_ind == 0 and not sorted_vals[0] == 0 else qp.RY
-    range_args = cond(reversed, lambda n: (n-2,-1,-1),lambda n: (0,n-1,1), n)
-    for i in range(*range_args):
-        if sorted_vals[i] == 1:
+    theta = -jnp.pi/2
+    for i in range(n-1):
+        # Here, this is equivalent to acting on the active qubits
+        # Step 1: Initial rotation on first qubit (arbitrary choice)
+        if (i == 0) & (sorted_vals[i] == 1):
+            if xy_ind == 0:
+                qp.RX(theta, sorted_indices[i])
+            else:
+                qp.RY(theta, sorted_indices[i])
+        if (sorted_vals[i] == 1) & (sorted_vals[i+1] == 1):
+            qp.CNOT(jnp.stack([sorted_indices[i], sorted_indices[i+1]]))
+           
+        
+
+def build_parallel_entangler_blocks_rev(selective_block: Array, n: int, xy_ind: Array):
+    """
+    Build parallel GHZ-style entangling gate sequences for A SINGLE selective block.
+    """
+    # Let selective_blocks contain k elements that are 1.
+    # The indices in the original array of the first k elements 
+    # of the sorted array are 1 and act as active indices
+    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    # The first k elements of the sorted array are 1 and act as active elements
+    sorted_vals = selective_block[sorted_indices] 
+    
+    # second predicate ensures that only the 'zero' setting is sampled for the Z-type block
+    # RXY = qp.RX if xy_ind == 0 and not sorted_vals[0] == 0 else qp.RY
+    theta = jnp.pi/2
+    for i in range(n-2,-1,-1):
+        if (sorted_vals[i] == 1) & (sorted_vals[i+1] == 1):
+            qp.CNOT(jnp.stack([sorted_indices[i], sorted_indices[i+1]]))
             # Here, this is equivalent to acting on the active qubits
             # Step 1: Initial rotation on first qubit (arbitrary choice)
-            if i == 0:
-                if xy_ind == 0 and not sorted_vals[0] == 0:
-                    qp.RX(jnp.pi/2, sorted_indices[i])
-                else:
-                    qp.RY(jnp.pi/2, sorted_indices[i])
+        if (i == 0) & (sorted_vals[i] == 1):
+            if xy_ind == 0:
+                qp.RX(theta, sorted_indices[i])
+            else:
+                qp.RY(theta, sorted_indices[i])
 
-            # use current active qubit as head and next one as target
-            if sorted_vals[i+1] == 1:
-                qp.CNOT(jnp.stack([sorted_indices[i], sorted_indices[i+1]]))
+
 
 def post_meas_state_gates(outcome):
     for i, oc in enumerate(outcome):
@@ -321,7 +343,6 @@ def test_permute_indices():
 
     print(circuit1(sequence_target, jnp.array([1,0,0,0,0])))
     print(circuit2(sequence_target.tolist(), jnp.array([1,0,0,0,0])))
-
 
 ###########################################
 

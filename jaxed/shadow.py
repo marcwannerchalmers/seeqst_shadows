@@ -8,7 +8,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jaxed.tools import utils
-from jaxed.tools.utils import build_parallel_entangler_blocks, \
+from jaxed.tools.utils import build_parallel_entangler_blocks, build_parallel_entangler_blocks_rev, \
                               post_meas_state_gates, HadjS, PartialCircuit, \
                               create_tableau, canonical_form,  \
                               permutation_to_swaps
@@ -26,7 +26,7 @@ import jax
 from jax import numpy as jnp
 from jax import Array, random, jit
 from flax import struct
-from jax.lax import cond
+from jax.lax import cond, fori_loop
 from functools import partial, lru_cache
 import time
 import catalyst
@@ -196,17 +196,36 @@ class Shadow(ABC, struct.PyTreeNode):
 
         return qjit(autograph=True)(catalyst.vmap(circuit, in_axes=(0,U_axes,state_axes)))
 
+    # TODO: Move these functions to utils
+    ###################################
+    @staticmethod
+    @lru_cache(None)
+    def _gt_circuit(n: int, state_treedef, obs_treedef):
+        obs_axes = obs_treedef.unflatten(
+                    [None] * state_treedef.num_leaves
+                )
+        state_axes = state_treedef.unflatten(
+            [0] * state_treedef.num_leaves
+        )
 
-    def ground_truth(self, obs):
+        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+        def circuit(state, obs):
+            state()
+            obs.circuit()
+            return qp.expval(obs.op())
+        
+        return qjit(autograph=True)(catalyst.vmap(circuit, in_axes=(state_axes, obs_axes)))
 
-        @qjit(autograph=True)
-        @qp.qnode(qp.device("lightning.qubit"))
-        def circuit(obs):
-            self.rho()
-            return qp.expval(obs)
+    def _ground_truth(self, states: State, obs: Observable):
+        state_treedef = jax.tree_util.tree_structure(states)
+        obs_treedef = jax.tree_util.tree_structure(obs)
+        circuit = self._gt_circuit(self.n, state_treedef, obs_treedef)
+        return circuit(states, obs)
 
-        return circuit(obs)
+    def ground_truth(self, states: State, observables: Observable):
+        return jax.vmap(self._ground_truth, in_axes=(None,0))(states, observables)
 
+    ####################################
 
 # TODO: Throw warning if full_setting and N odd
 # TODO: Throw notimplementederror if the observable is not PauliObservable
@@ -263,13 +282,13 @@ class SEEQSTShadow(Shadow):
     def U_fun(ind: Array, **kwargs)->None:
         n = ind.shape[0] - 1
         block_idx, xy = ind[:n], ind[n]
-        build_parallel_entangler_blocks(block_idx,n, xy)
+        build_parallel_entangler_blocks_rev(block_idx,n, xy)
 
     @staticmethod
     def Udag_fun(ind: Array, **kwargs)->None:
         n = ind.shape[0] - 1
         block_idx, xy = ind[:n], ind[n]
-        build_parallel_entangler_blocks(block_idx,n,xy,reversed=True)
+        build_parallel_entangler_blocks(block_idx,n,xy)
 
     @classmethod
     @lru_cache(None)
@@ -292,6 +311,32 @@ class SEEQSTShadow(Shadow):
         circuits = catalyst.vmap(circuit_rho, in_axes=(0, U_axes, obs_axes, ind_axis))
 
         return qjit(autograph=True)(circuits)
+
+    @classmethod
+    def inverse_circuit_clifford(cls, outcome: Array, ind: Array) -> Tableau:
+        n = outcome.shape[-1]
+        selective_block, xy = ind[:n], ind[n]
+        tableau = Tableau.create(n)
+        tableau = tableau.MultiPauli(outcome)
+        # Read utils.parallel_entangler_blocks for more explanation
+        sorted_indices = jnp.argsort(selective_block, descending=True) 
+        sorted_vals = selective_block[sorted_indices] 
+
+        # TODO: Add this with the reversed argument to clifford
+        def body_fun(i, tableau: Tableau):
+            ind = n-2-i # reversed order 
+            return tableau.CNOT(sorted_indices[ind],
+                                sorted_indices[ind+1],
+                                (sorted_vals[ind] == 1) & (sorted_vals[ind+1] == 1))
+
+        tableau = fori_loop(0, n-1, body_fun, tableau)
+
+        theta = -jnp.pi/2
+        tableau = tableau.PauliRot(jnp.array(0, dtype=int), 
+                                   theta, 
+                                   sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0
+
+        return tableau
 
     @classmethod
     def _inverse_channel(cls, n: int, inv_oc: Array, obs: Observable) -> Array:
@@ -388,7 +433,7 @@ class PauliShadow(Shadow):
 
     @classmethod
     def inverse_circuit_clifford(cls, outcome) -> Tableau:
-        raise NotImplementedError()
+        raise NotImplementedError("Use the more efficient _inverse_circuit.")
 
     @classmethod
     def _inverse_channel(cls, n: int, inv_oc: Array, obs: Observable) -> Array:
@@ -667,6 +712,42 @@ def test_clifford_sim():
     end = time.time()
     print(end-start)
 
+def test_seeqst_sim():
+    n = 3
+    paulis = ["X"*n,"Y"*n, "Z"*n]
+    N = 100000
+    N_state_reps = 5
+    obs = PauliObservable.init(paulis)
+    key = jax.random.PRNGKey(1234)
+    states = HRState.init_random(key, N_state_reps, n)
+    print("started timing")
+    start = time.time()
+    shadow = SEEQSTShadow.init(key, n, N, N_state_reps)
+    shadow = shadow.sample(states)
+    end = time.time()
+    print(end-start)
+    print("sampled")
+    start = time.time()
+    @jit
+    def fun(shadow, obs):
+        shadow = jit(shadow.create_snapshots)()
+        props = jit(shadow.estimate_properties)(obs)
+        return props
+        
+    out = fun(shadow, obs)
+    print(out)
+    end = time.time()
+    print(states.state_dm.shape)
+    print(shadow.ground_truth(states, obs).T)
+    print(end-start)
+    print("started timing again")
+    start = time.time()
+    pred_fun = lambda shadow, obs: shadow.predict(obs)
+    pred_fun = jax.vmap(jax.vmap(pred_fun, in_axes=(None, 0)), in_axes=(0,None))
+    print(pred_fun(shadow, obs))
+    end = time.time()
+    print(end-start)
+
 ################################
 
 
@@ -677,7 +758,8 @@ if __name__ == "__main__":
     # test_clifford_jaxed()
     # test_pauli_jaxed()
     # test_seeqst_shadow()
-    test_clifford_sim()
+    # test_clifford_sim()
+    test_seeqst_sim()
     
 
     
