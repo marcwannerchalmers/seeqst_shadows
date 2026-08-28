@@ -16,7 +16,7 @@ from functools import partial
 
 
 
-def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Array):
+def build_parallel_entangler_blocks_rev(selective_block: Array, n: int, xy_ind: Array):
     """
     Build parallel GHZ-style entangling gate sequences for A SINGLE selective block.
     """
@@ -43,7 +43,7 @@ def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Arra
            
         
 
-def build_parallel_entangler_blocks_rev(selective_block: Array, n: int, xy_ind: Array):
+def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Array):
     """
     Build parallel GHZ-style entangling gate sequences for A SINGLE selective block.
     """
@@ -181,7 +181,7 @@ def create_tableau(key: Array, n: int):
     Delta = jnp.tril(Delta, k=-1) + jnp.eye(n, dtype=Delta.dtype)
     Deltad = jnp.tril(Deltad, k=-1) + jnp.eye(n, dtype=Delta.dtype)
     
-    return Gamma, Gammad, Delta, Deltad, h, S-1 # permutation indexes at 0
+    return Gamma, Delta, Gammad, Deltad, h, S-1 # permutation indexes at 0
 
 # pennylane circuit operators of F as defined in (2) in the paper 
 # note that it is prepared in 'reverse' order so that the correpsondence holds

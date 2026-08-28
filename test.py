@@ -1,6 +1,6 @@
 import pennylane as qp
 from catalyst import qjit
-from jaxed.tools.clifford import Tableau
+from jaxed.tools.clifford import Tableau, GHZ_type_state_clifford_rev
 from jaxed.tools.utils import build_parallel_entangler_blocks_rev, build_parallel_entangler_blocks, post_meas_state_gates
 from jax import numpy as jnp
 from jax import Array
@@ -17,22 +17,7 @@ def simulate_clifford(outcome: Array, ind: Array, obs: PauliObservable):
     tableau = Tableau.create(n)
     tableau = tableau.MultiPauli(outcome)
     # Read utils.parallel_entangler_blocks for more explanation
-    sorted_indices = jnp.argsort(selective_block, descending=True) 
-    sorted_vals = selective_block[sorted_indices] 
-
-    # TODO: Add this with the reversed argument to clifford
-    def body_fun(i, tableau: Tableau):
-        ind = n-2-i # reversed order 
-        return tableau.CNOT(sorted_indices[ind],
-                            sorted_indices[ind+1],
-                            (sorted_vals[ind] == 1) & (sorted_vals[ind+1] == 1))
-
-    tableau = fori_loop(0, n-1, body_fun, tableau)
-
-    theta = -jnp.pi/2
-    tableau = tableau.PauliRot(jnp.array(0, dtype=int), 
-                                theta, 
-                                sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0
+    tableau = GHZ_type_state_clifford_rev(selective_block, xy, tableau)
 
     return tableau.expval(obs.params)
 
@@ -51,7 +36,7 @@ def test_functions():
                                   (N,n+1), 0, 2)
 
     obs = PauliObservable.init_random(jax.random.PRNGKey(412354),n=n, N=N)
-    obs = [obs.replace(params=1*jnp.ones(n,dtype=int)) for i in range(N)]
+    obs = [obs.replace(params=2*jnp.ones(n,dtype=int)) for i in range(N)]
     dev = qp.device("lightning.qubit", wires=n)
     state = HRState.init_random(jax.random.PRNGKey(1111), 1, n)
     state = state.replace(state_dm=state.state_dm[0])
@@ -61,7 +46,7 @@ def test_functions():
         n = outcome.shape[-1]
         selective_block, xy = ind[:n], ind[n]
         post_meas_state_gates(outcome)
-        build_parallel_entangler_blocks(selective_block, n, xy)
+        build_parallel_entangler_blocks_rev(selective_block, n, xy)
         obs.circuit()
         return qp.expval(obs.op())
 
@@ -70,7 +55,9 @@ def test_functions():
     for i in range(N):
         out1 = simulate_clifford(outcomes[i], inds[i], obs[i])
         out2 = simulate_qp(outcomes[i], inds[i], obs[i], circuit)
-        print(i, out1, out2, outcomes[i], inds[i])
+        print(i)
+        if jnp.abs(out1-out2) > 0.001:
+            print(i, out1, out2, outcomes[i], inds[i])
 
 if __name__ == "__main__":
     test_functions()

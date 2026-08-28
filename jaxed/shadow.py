@@ -31,7 +31,7 @@ from functools import partial, lru_cache
 import time
 import catalyst
 from jaxed.tools import clifford
-from jaxed.tools.clifford import Tableau
+from jaxed.tools.clifford import Tableau, GHZ_type_state_clifford_rev
 
 
 large_width = 400
@@ -282,13 +282,13 @@ class SEEQSTShadow(Shadow):
     def U_fun(ind: Array, **kwargs)->None:
         n = ind.shape[0] - 1
         block_idx, xy = ind[:n], ind[n]
-        build_parallel_entangler_blocks_rev(block_idx,n, xy)
+        build_parallel_entangler_blocks(block_idx,n, xy)
 
     @staticmethod
     def Udag_fun(ind: Array, **kwargs)->None:
         n = ind.shape[0] - 1
         block_idx, xy = ind[:n], ind[n]
-        build_parallel_entangler_blocks(block_idx,n,xy)
+        build_parallel_entangler_blocks_rev(block_idx,n,xy)
 
     @classmethod
     @lru_cache(None)
@@ -318,24 +318,7 @@ class SEEQSTShadow(Shadow):
         selective_block, xy = ind[:n], ind[n]
         tableau = Tableau.create(n)
         tableau = tableau.MultiPauli(outcome)
-        # Read utils.parallel_entangler_blocks for more explanation
-        sorted_indices = jnp.argsort(selective_block, descending=True) 
-        sorted_vals = selective_block[sorted_indices] 
-
-        # TODO: Add this with the reversed argument to clifford
-        def body_fun(i, tableau: Tableau):
-            ind = n-2-i # reversed order 
-            return tableau.CNOT(sorted_indices[ind],
-                                sorted_indices[ind+1],
-                                (sorted_vals[ind] == 1) & (sorted_vals[ind+1] == 1))
-
-        tableau = fori_loop(0, n-1, body_fun, tableau)
-
-        theta = -jnp.pi/2
-        tableau = tableau.PauliRot(jnp.array(0, dtype=int), 
-                                   theta, 
-                                   sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0
-
+        tableau = GHZ_type_state_clifford_rev(selective_block, xy, tableau)
         return tableau
 
     @classmethod
@@ -428,11 +411,16 @@ class PauliShadow(Shadow):
 
         return circuits 
 
+    # do nothing for compatibility
+    def create_snapshots(self) -> Shadow:
+        return self
+
     def estimate_properties(self, obs: Observable)->Array:
-        return self.predict(obs)
+        pred_fun = lambda shadow, obs: shadow.predict(obs)
+        return jax.vmap(jax.vmap(pred_fun, in_axes=(None, 0)), in_axes=(0,None))(self, obs)
 
     @classmethod
-    def inverse_circuit_clifford(cls, outcome) -> Tableau:
+    def inverse_circuit_clifford(cls, outcome: Array, ind: Array) -> Tableau:
         raise NotImplementedError("Use the more efficient _inverse_circuit.")
 
     @classmethod
@@ -681,8 +669,8 @@ def test_pauli_jaxed():
 def test_clifford_sim():
     n = 3
     paulis = ["X"*n,"Y"*n, "Z"*n]
-    N = 10000
-    N_state_reps = 10
+    N = 100000
+    N_state_reps = 5
     obs = PauliObservable.init(paulis)
     key = jax.random.PRNGKey(1234)
     states = HRState.init_random(key, N_state_reps, n)
@@ -699,7 +687,7 @@ def test_clifford_sim():
         shadow = jit(shadow.create_snapshots)()
         props = jit(shadow.estimate_properties)(obs)
         return props
-        
+    print(shadow.ground_truth(states, obs).T)
     out = fun(shadow, obs)
     print(out)
     end = time.time()
@@ -748,6 +736,35 @@ def test_seeqst_sim():
     end = time.time()
     print(end-start)
 
+def test_pauli_new():
+    n = 3
+    paulis = ["X"*n,"Y"*n, "Z"*n]
+    N = 100000
+    N_state_reps = 5
+    obs = PauliObservable.init(paulis)
+    key = jax.random.PRNGKey(1234)
+    states = HRState.init_random(key, N_state_reps, n)
+    print("started timing")
+    start = time.time()
+    shadow = PauliShadow.init(key, n, N, N_state_reps)
+    shadow = shadow.sample(states)
+    end = time.time()
+    print(end-start)
+    print("sampled")
+    start = time.time()
+    @jit
+    def fun(shadow, obs):
+        shadow = jit(shadow.create_snapshots)()
+        props = jit(shadow.estimate_properties)(obs)
+        return props
+        
+    out = fun(shadow, obs)
+    print(out)
+    end = time.time()
+    print(states.state_dm.shape)
+    print(shadow.ground_truth(states, obs).T)
+    print(end-start)
+
 ################################
 
 
@@ -759,7 +776,8 @@ if __name__ == "__main__":
     # test_pauli_jaxed()
     # test_seeqst_shadow()
     # test_clifford_sim()
-    test_seeqst_sim()
+    # test_seeqst_sim()
+    test_pauli_new()
     
 
     

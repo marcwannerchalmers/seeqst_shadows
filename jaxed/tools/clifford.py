@@ -276,11 +276,11 @@ class Tableau(struct.PyTreeNode):
     def _single_Paulim90(pauli: Array, xi: Array, zi: Array):
         xi_res = cond(pauli % 3 == 0,
                         lambda: xi, # Id,RY,RZ
-                        lambda: (xi + zi) % 2 # RX
+                        lambda: cond(pauli==2, lambda: zi, lambda: (xi + zi) % 2) # RX,RZ
                         )
  
         zi_res = cond(pauli <= 1, 
-                        lambda: zi, # Id, RY
+                        lambda: zi, # Id, RX
                         lambda: cond(pauli==2, lambda: xi, lambda: (xi + zi) % 2) # RX,RZ
                         )
         
@@ -417,20 +417,19 @@ def canonical_form_rev(tableau: Tableau, Gamma: Array, Delta: Array,
 
     return tableau
 
-def GHZ_type_state_clifford(selective_block: Array,
+def GHZ_type_state_clifford_rev(selective_block: Array,
                             xy: Array,
                             tableau: Tableau):
     
     n = tableau.n
-    tableau = Tableau.create(n)
     # Read utils.parallel_entangler_blocks for more explanation
     sorted_indices = jnp.argsort(selective_block, descending=True) 
     sorted_vals = selective_block[sorted_indices] 
 
     # theta = cond(reversed, lambda: -jnp.pi/2, lambda: jnp.pi/2)
-    theta = jnp.pi/2
+    theta = -jnp.pi/2
     # applies nothing if indices are all 0
-    tableau = tableau.PauliRot(jnp.array(0, dtype=int), 
+    tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=int), 
                                 theta, 
                                 sorted_vals[0]*(xy+1)) 
 
@@ -441,6 +440,31 @@ def GHZ_type_state_clifford(selective_block: Array,
 
     tableau = fori_loop(0, n-1, body_fun, tableau)
 
+    return tableau
+
+def GHZ_type_state_clifford(selective_block: Array,
+                            xy: Array,
+                            tableau: Tableau):
+    
+    n = tableau.n
+    # Read utils.parallel_entangler_blocks for more explanation
+    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    sorted_vals = selective_block[sorted_indices] 
+    
+    # TODO: Add this with the reversed argument to clifford
+    def body_fun(i, tableau: Tableau):
+        ind = n-2-i # reversed order 
+        return tableau.CNOT(sorted_indices[ind],
+                            sorted_indices[ind+1],
+                            (sorted_vals[ind] == 1) & (sorted_vals[ind+1] == 1))
+    
+    tableau = fori_loop(0, n-1, body_fun, tableau)
+    
+    theta = jnp.pi/2
+    tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=int), 
+                               theta, 
+                               sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0
+    
     return tableau
 
 def test_sim():
