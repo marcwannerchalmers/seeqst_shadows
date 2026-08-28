@@ -12,7 +12,7 @@ class GPShadow(Shadow):
         super().__init__(state, gate_indices, estimator)
 
     # either offline or online, depending on whether algo is None
-    def create(self, N: int):
+    def init(self, N: int):
         pass
 
     def predict(self, obs_list)->NDArray:

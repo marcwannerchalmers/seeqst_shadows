@@ -20,8 +20,7 @@ import qutip as qt
 
 class Observable(ABC, struct.PyTreeNode):
     params: Array # needs to be the dimension that it would be if this was an object containing multiple observables
-    name_fun: Callable | None = struct.field(pytree_node=False,
-                             default=None)
+    name_fun: Callable | None = struct.field(pytree_node=False)
 
     @classmethod
     def init(cls, init_params, name_fun=None):
@@ -57,37 +56,34 @@ class Observable(ABC, struct.PyTreeNode):
 QP_OBS_LIST = [qp.Identity, qp.PauliX, qp.PauliY, qp.PauliZ]
 
 class PauliObservable(Observable):
-
+    ztype_obs_list: List = struct.field(pytree_node=False)
     pauli_dict: ClassVar[Dict] = {"I": 0, "X": 1, "Y": 2, "Z": 3}
     pauli_list: ClassVar[List] = ["I","X","Y","Z"]
     qp_obs_list: ClassVar[List[Callable[...,Any]]] = QP_OBS_LIST
     matrix_list: ClassVar[Array] = jnp.array([op(0).matrix() for op in QP_OBS_LIST])
-    ztype_obs_list: ClassVar[List] = struct.field(pytree_node=False, init=False)
 
     @classmethod
     def init(cls, init_params, name_fun=None):
         params = jnp.stack([cls.get_param(param) for param in init_params])
-        instance = super().init(params, name_fun)
         n = params.shape[-1]
         ztype_obs_list = list(reversed([qp.Identity(0)] + \
                                     [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
                                     for j in range(n-1,i-1,-1)]) 
                                     for i in range(n-1,-1,-1)]))
-        instance.replace(ztype_obs_list=ztype_obs_list)
-        return instance
+
+        return cls(params, name_fun=name_fun, ztype_obs_list=ztype_obs_list)
         
     @classmethod
     def init_random(cls, key, sample_indices: List=[0,4], n: int=1, N: int=1,
                     name_fun=None):
         params = cls.sample(key, n, N, sample_indices)
-        instance = super().init(params, name_fun)
         n = params.shape[-1]
         ztype_obs_list = list(reversed([qp.Identity(0)] + \
                                     [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
                                     for j in range(n-1,i-1,-1)]) 
                                     for i in range(n-1,-1,-1)]))
-        instance.replace(ztype_obs_list=ztype_obs_list)
-        return instance
+
+        return cls(params, name_fun=name_fun, ztype_obs_list=ztype_obs_list)
 
     @classmethod
     def get_param(cls, pauli_str: str):

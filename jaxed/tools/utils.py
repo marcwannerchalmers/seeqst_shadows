@@ -14,6 +14,7 @@ from flax import struct
 from jax.lax import cond, fori_loop, scan
 from functools import partial
 
+
 # Credit goes to SEEQST
 # Can probably be tuned
 # Block should already be a binary array
@@ -54,8 +55,7 @@ def post_meas_state_gates(outcome):
 
 
 def HadjS(i: int):
-    qp.Hadamard(i)
-    qp.adjoint(qp.S)(i) # type: ignore[reportCallIssue]
+    return qp.prod(qp.Hadamard(i), qp.adjoint(qp.S)(i)) # type: ignore[reportCallIssue]
 
 @struct.dataclass
 class PartialCircuit:
@@ -194,6 +194,9 @@ def F_rev(pauli_indices: Array, Gamma: Array, Delta: Array)->None:
 
 
     for i in reversed(range(n)):
+        if Gamma[i,i] == 1:
+                    # in the paper, they call the S gate P
+            qp.adjoint(qp.S)(wires=i)
         if pauli_indices[i] == 1:
             qp.X(i)
         elif pauli_indices[i] == 2:
@@ -201,9 +204,6 @@ def F_rev(pauli_indices: Array, Gamma: Array, Delta: Array)->None:
         elif pauli_indices[i] == 3:
             qp.Z(i)
     
-        if Gamma[i,i] == 1:
-            # in the paper, they call the S gate P
-            qp.adjoint(qp.S)(wires=i)
     # Gamma is symmetric
     for i in range(n):
         for j in range(i):
@@ -289,7 +289,7 @@ def permutation_to_swaps(S):
     return jnp.stack([swap_i, swap_j], axis=1)
 
 def test_permute_indices():
-    sequence_target = jnp.array([5,1,3,2,4])-1
+    sequence_target = jnp.array([4,1,5,3,2])-1
     swaps = permutation_to_swaps(sequence_target)
     print(sequence_target, swaps.T)
     sequence = list(range(sequence_target.shape[0]))
@@ -300,9 +300,27 @@ def test_permute_indices():
         sequence[swaps[0,i]] = sequence[swaps[1,i]]
         sequence[swaps[1,i]] = c
         
-
+    n = 5
     print(sequence)
 
+    @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+    def circuit1(seq, outcome):
+        post_meas_state_gates(outcome)
+        swap_indices = permutation_to_swaps(seq)
+        for i in reversed(range(n)):
+            if swap_indices[i,0] != swap_indices[i,1]:
+                qp.SWAP(wires=jnp.stack([swap_indices[i,0], 
+                                            swap_indices[i,1]]))
+        return qp.state()
+
+    @qp.qnode(qp.device("default.qubit", wires=range(n)))
+    def circuit2(seq, outcome):
+        post_meas_state_gates(outcome)
+        qp.Permute(seq, wires=range(n))
+        return qp.state()
+
+    print(circuit1(sequence_target, jnp.array([1,0,0,0,0])))
+    print(circuit2(sequence_target.tolist(), jnp.array([1,0,0,0,0])))
 
 
 ###########################################
