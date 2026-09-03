@@ -13,10 +13,8 @@ import math
 
 
 class PauliProductKernel(gpytorch.kernels.Kernel):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
         # Lower-triangular Cholesky factor of C
         self.raw_L = torch.nn.Parameter(
             torch.eye(4)
@@ -30,35 +28,73 @@ class PauliProductKernel(gpytorch.kernels.Kernel):
         last_dim_is_batch=False,
         **params,
     ):
-
+        x1 = x1.to(torch.int)
+        x2 = x2.to(torch.int)
         # C = L L^T
         L = torch.tril(self.raw_L)
-
         # Make diagonal positive
         diag_L = torch.diagonal(L)
         positive_diag = torch.nn.functional.softplus(diag_L)
-
         L = L - torch.diag(diag_L) + torch.diag(positive_diag)
-
         C = L @ L.T
-
         # Normalize to correlation matrix
         d = torch.sqrt(torch.diag(C))
         C = C / d[:, None] / d[None, :]
-
         # x1: N x n
         # x2: M x n
-
         # C[x1, x2] gives N x M x n
         per_dimension = C[x1[:, None, :], x2[None, :, :]]
-
         # Product over Pauli-string positions
         K = per_dimension.prod(dim=-1)
-
         if diag:
             return K.diagonal()
 
         return K
+
+class HammingKernel(gpytorch.kernels.Kernel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.l = nn.Parameter(Tensor([1.]))
+        self.std = nn.Parameter(Tensor([1.]))
+
+    def forward(
+            self,
+            x1: Tensor,
+            x2: Tensor,
+            diag=False,
+            last_dim_is_batch=False,
+            **params,
+        ):
+        x1 = x1.unsqueeze(-2)
+        x2 = x2.unsqueeze(-3)
+        dxy = torch.count_nonzero(x1-x2, dim=-1)
+        return self.std**2 * torch.exp(-dxy/self.l)
+
+class SeparatedHammingKernel(gpytorch.kernels.Kernel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.lI = nn.Parameter(Tensor([1.]))
+        self.lP = nn.Parameter(Tensor([1.]))
+        self.stdI = nn.Parameter(Tensor([1.]))
+        self.stdP = nn.Parameter(Tensor([1.]))
+
+    def forward(
+            self,
+            x1: Tensor,
+            x2: Tensor,
+            diag=False,
+            last_dim_is_batch=False,
+            **params,
+        ):
+        x1 = x1.unsqueeze(-2)
+        x2 = x2.unsqueeze(-3)
+        mask1 = (x1 == 0).to(x1.dtype)
+        mask2 = (x2 == 0).to(x2.dtype)
+        dxyI = torch.count_nonzero(mask1*x1-mask2*x2, dim=-1)
+        dxyP = torch.count_nonzero((1-mask1)*x1-(1-mask2)*x2, dim=-1)
+        return self.stdI**2 * torch.exp(-dxyI/self.lI) \
+             + self.stdP**2 * torch.exp(-dxyP/self.lP)
+        
 
 # vectorized version of FullLocalNW
 # train_inputs: X of training set
@@ -66,15 +102,13 @@ class PauliProductKernel(gpytorch.kernels.Kernel):
 # likelihood: Likelihood object from GPytorch
 # kernel_cls: class name of Kernel
 # target_dim: Number of "parallel" GPs (i.e. number of targets for same x)
-class ShadowGPModel(gpytorch.models.ExactGP):
+class SingleShadowGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_inputs, train_targets, likelihood, kernel_cls, 
                  kernel_parameters={}):
         super().__init__(train_inputs, train_targets, likelihood)
         kernel_parameters = dict(**kernel_parameters)
 
-
         self.mean_module = gpytorch.means.ZeroMean()
-        #self.decay_rates = nn.Parameter(init_decay_rate*torch.ones((self.target_dim,)))
         self.kernel = kernel_cls(**kernel_parameters)
     
     def forward(self, x):
@@ -93,22 +127,20 @@ def init_GP_model(train_loader: torch.utils.data.DataLoader, kernel_type,
         train_y.append(y)
 
     train_x = torch.cat(train_x)
-    train_y = torch.cat(train_y).permute(1,0)
+    train_y = torch.cat(train_y)
 
-    #likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_constraint=gpytorch.constraints.Interval(0.005,1),
-    #                                                     batch_shape=torch.Size([target_dim]))
-    #print(train_x.shape)
-    likelihood = gpytorch.likelihoods.FixedNoiseGaussianLikelihood(noise=torch.zeros((train_x.shape[2], train_x.shape[2])))
-    
+    likelihood = gpytorch.likelihoods.GaussianLikelihood()
 
     if kernel_type == "PauliProduct":
         kernel_cls = PauliProductKernel
+    elif kernel_type == "Hamming":
+        kernel_cls = HammingKernel
+    elif kernel_type == "SeparatedHamming":
+        kernel_cls = SeparatedHammingKernel
+    else:
+        raise NotImplementedError()
 
-    #model = FullLocalGP(train_x, train_y, likelihood, kernel_cls, 
-                        #kernel_parameters, geometry_parameters)
-
-    # TODO: Swap this with 
-    model = ShadowGPModel(train_x, train_y, likelihood,
+    model = SingleShadowGPModel(train_x, train_y, likelihood,
                           kernel_cls, kernel_parameters)
     
     return model, train_x, train_y, likelihood

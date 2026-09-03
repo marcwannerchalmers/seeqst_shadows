@@ -19,6 +19,3 @@ class MedianOfMeans(Estimator):
         buckets = np.array_split(x, self.k, axis=-1)
         buckets = np.stack([super().__call__(bucket) for bucket in buckets], axis=-1)
         return np.median(buckets, axis=-1)
-
-class GPEstimator(Estimator):
-    pass

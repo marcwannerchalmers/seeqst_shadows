@@ -203,6 +203,9 @@ def test_XY_combos():
     # TODO: figure out how to plot this
     # experiments.plot()
 
+def testGP():
+    pass
+
 def main():
     test_multiple_hom_paulis()
 

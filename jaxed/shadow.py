@@ -26,12 +26,14 @@ import jax
 from jax import numpy as jnp
 from jax import Array, random, jit
 from flax import struct
+from jax import lax
 from jax.lax import cond, fori_loop
 from functools import partial, lru_cache
 import time
 import catalyst
 from jaxed.tools import clifford
 from jaxed.tools.clifford import Tableau, GHZ_type_state_clifford_rev
+from jaxed.tools.distributions import uniform
 
 
 large_width = 400
@@ -50,7 +52,7 @@ class Shadow(ABC, struct.PyTreeNode):
     outcomes: Array
     U: PartialCircuit
     Udag: PartialCircuit
-    snapshots: Tableau 
+    snapshots: Tableau | None
 
     # create shadow from N state samples
     @classmethod
@@ -85,17 +87,17 @@ class Shadow(ABC, struct.PyTreeNode):
         return instance
 
     # use this to replace the outcomes
-    def _sample(self, state):
+    def _sample(self, indices, state):
         U_treedef = jax.tree_util.tree_structure(self.U)
         state_treedef = jax.tree_util.tree_structure(state)
         circuit = self._sample_circuit(self.n, U_treedef, state_treedef)
-        outcomes = circuit(self.indices, self.U, state)[:,0]
+        outcomes = circuit(indices, self.U, state)[:,0]
 
         return outcomes
 
     def sample(self, states):
-        create_samples = lambda shadow, state: shadow._sample(state)
-        outcomes = jax.vmap(create_samples)(self, states)
+        create_samples = lambda shadow, indices, state: shadow._sample(indices, state)
+        outcomes = jax.vmap(create_samples, in_axes=(None, 0,0))(self, self.indices, states)
         return self.replace(outcomes=outcomes)
 
     def create_snapshots(self)->Shadow:
@@ -105,21 +107,30 @@ class Shadow(ABC, struct.PyTreeNode):
         return self.replace(snapshots=snapshots)
 
     # Assuming that tableaus has batch dim N
-    def estimate_property(self, obs: Observable):
+    def estimate_property(self, snapshots: Array, obs: Observable, Ns: Array=jnp.array([0])):
         est_prop = lambda tableau, obs: self._inverse_channel(self.n, 
                                                               tableau.expval(obs.params), 
                                                               obs)
         props = jax.vmap(est_prop,
-                        in_axes=(0,None))(self.snapshots,
+                        in_axes=(0,None))(snapshots,
                                           obs)
-        return self.estimator(props)
+        pred_fun = lambda estimator, props, N: estimator(props, N)
+        return jax.vmap(pred_fun, 
+                        in_axes=(None, None, 0))(self.estimator, props, Ns)
 
-    def estimate_properties(self, obs: Observable)->Array:
-        est_prop = lambda shadow, obs: shadow.estimate_property(obs)
-        props = jax.vmap(jax.vmap(est_prop,
-                                in_axes=(None,0)),
-                                in_axes=(0, None))(self, 
-                                                   obs)
+    def estimate_properties(self, obs: Observable, Ns: Array=jnp.array([0]),
+                            batch_size: int | None=None)->Array:
+        est_prop = lambda shadow, snapshots, obs: shadow.estimate_property(snapshots, obs, Ns)
+        est_props = lambda snapshots: jax.vmap(est_prop,
+                                               in_axes=(None, None,0))(self, 
+                                                                       snapshots, 
+                                                                       obs)
+        props = lax.map(est_props, self.snapshots, batch_size=batch_size)
+        """jax.vmap(jax.vmap(est_prop,
+                                in_axes=(None, None,0)),
+                                in_axes=(None, 0, None))(self, 
+                                                   self.snapshots,
+                                                   obs)"""
         return props
 
     def predict(self, obs: Observable)->Array:
@@ -148,6 +159,10 @@ class Shadow(ABC, struct.PyTreeNode):
     @abstractmethod
     def U_fun(ind: Array, **kwargs)->None:
         pass       
+
+    @property
+    def N_state_reps(self)->int:
+        return self.outcomes.shape[-3]
 
     @property
     def n(self)->int:
@@ -223,7 +238,7 @@ class Shadow(ABC, struct.PyTreeNode):
         return circuit(states, obs)
 
     def ground_truth(self, states: State, observables: Observable):
-        return jax.vmap(self._ground_truth, in_axes=(None,0))(states, observables)
+        return jax.vmap(self._ground_truth, in_axes=(None,0), out_axes=1)(states, observables)
 
     ####################################
 
@@ -245,34 +260,19 @@ class SEEQSTShadow(Shadow):
     def init(cls, key: Array, n: int, N: int, N_state_reps: int, 
                sample_idx_range: Array=jnp.array([0,2]), 
                estimator: Estimator=Estimator(), 
-               full_setting: bool=False):
-        return super().init(key, n, N, N_state_reps, sample_idx_range, estimator, full_setting)
+               distribution: Callable=uniform,
+               *args, **kwargs):
+        return super().init(key, n, N, N_state_reps, sample_idx_range, estimator, distribution)
 
+    # Distribution has to be a function matching the pattern below and return SEEQST binary indices
+    # of shape (N, n+1)
     @classmethod
-    def sample_indices(cls, key: Array, shape: tuple[int,...], sample_idx_range, full_setting: bool)->Array:
+    def sample_indices(cls, key: Array, shape: tuple[int,...], sample_idx_range, 
+                       distribution: Callable, *args, **kwargs)->Array:
         N, n = shape
-
-        def full_fn(key: Array, indices: Array):
-            N2 = N//2
-            init_indices = random.randint(key, (N2,n), *sample_idx_range)
-            indices = indices.at[:N2,:n].set(init_indices)
-            indices = indices.at[N2:2*N2,:n].set(init_indices)
-            indices = indices.at[:N2,n].set(jnp.zeros((init_indices.shape[0],), dtype=indices.dtype))
-            indices = indices.at[N2:2*N2,n].set(jnp.ones((init_indices.shape[0],), dtype=indices.dtype))
-            return indices
-
-        def rand_fn(key: Array, indices: Array):
-            key1, key2 = random.split(key)
-            init_indices = super(SEEQSTShadow, cls).sample_indices(key1, (N,n), sample_idx_range)
-            setting_indices = random.randint(key2, (N,), 0, 2)
-            indices = indices.at[:,:n].set(init_indices)
-            indices = indices.at[:,n].set(setting_indices)
-
-            return indices
-
-        indices = jnp.zeros((N,n+1), dtype=int)
-
-        return cond(full_setting, full_fn, rand_fn, key, indices)
+        indices = distribution(key, N, n, sample_idx_range, *args, **kwargs)
+    
+        return indices
 
         # Convert circuit text to JAX arrays
         # Selective circuit texts - can be modified to improve efficiency
@@ -703,7 +703,8 @@ def test_clifford_sim():
 def test_seeqst_sim():
     n = 3
     paulis = ["X"*n,"Y"*n, "Z"*n]
-    N = 100000
+    N = 10000
+
     N_state_reps = 5
     obs = PauliObservable.init(paulis)
     key = jax.random.PRNGKey(1234)
@@ -716,30 +717,32 @@ def test_seeqst_sim():
     print(end-start)
     print("sampled")
     start = time.time()
+    shadow = jit(shadow.create_snapshots)()
     @jit
-    def fun(shadow, obs):
-        shadow = jit(shadow.create_snapshots)()
-        props = jit(shadow.estimate_properties)(obs)
+    def fun(shadow, obs, N):
+        props = shadow.estimate_properties(obs, N)
         return props
+
+    Ns = jnp.array([1e2, 1e3, 1e4, -1], dtype=int)
         
-    out = fun(shadow, obs)
+    out = jax.vmap(fun, in_axes=(None, None, 0))(shadow, obs, Ns)
     print(out)
     end = time.time()
     print(states.state_dm.shape)
-    print(shadow.ground_truth(states, obs).T)
+    print(shadow.ground_truth(states, obs))
     print(end-start)
-    print("started timing again")
+    """print("started timing again")
     start = time.time()
     pred_fun = lambda shadow, obs: shadow.predict(obs)
     pred_fun = jax.vmap(jax.vmap(pred_fun, in_axes=(None, 0)), in_axes=(0,None))
     print(pred_fun(shadow, obs))
     end = time.time()
-    print(end-start)
+    print(end-start)"""
 
 def test_pauli_new():
     n = 3
     paulis = ["X"*n,"Y"*n, "Z"*n]
-    N = 100000
+    N = 10000
     N_state_reps = 5
     obs = PauliObservable.init(paulis)
     key = jax.random.PRNGKey(1234)
@@ -776,8 +779,8 @@ if __name__ == "__main__":
     # test_pauli_jaxed()
     # test_seeqst_shadow()
     # test_clifford_sim()
-    # test_seeqst_sim()
-    test_pauli_new()
+    test_seeqst_sim()
+    # test_pauli_new()
     
 
     
