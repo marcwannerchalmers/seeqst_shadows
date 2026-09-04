@@ -74,10 +74,21 @@ class PauliObservable(Observable):
         return cls(params, name_fun=name_fun, ztype_obs_list=ztype_obs_list)
         
     @classmethod
-    def init_random(cls, key, sample_indices: List=[0,4], n: int=1, N: int=1,
-                    name_fun=None):
-        params = cls.sample(key, n, N, sample_indices)
-        n = params.shape[-1]
+    def init_random(cls, key, sample_indices: List[int]=list(range(4)), n: int=1, N: int=1,
+                    name_fun=None, k_local=0, padding_indices: List[int]=[0]):
+        if (k_local <= 0) or (k_local > n): 
+            k_local = n
+        key1, key2, key3 = random.split(key, 3)
+        sample_indices = jnp.array(sample_indices)
+        sample_params = random.randint(key1, (N,k_local), 0, len(sample_indices))
+        params = sample_indices[sample_params]
+        if k_local < n:
+            padding_indices = jnp.array(padding_indices)
+            sample_params2 = random.randint(key2, (N,n-k_local), 0, len(padding_indices))
+            params2 = padding_indices[sample_params2]
+            params = jnp.concatenate([params, params2], axis=1)
+            params = random.permutation(key3, params, axis=1, independent=True)
+
         ztype_obs_list = list(reversed([qp.Identity(0)] + \
                                     [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
                                     for j in range(n-1,i-1,-1)]) 
@@ -132,7 +143,7 @@ class PauliObservable(Observable):
 
     @classmethod 
     def obs_string(cls, pauli_array) -> str:
-        obs = "".join(cls.pauli_list[pauli_array[i]] for i in range(4))
+        obs = "".join(cls.pauli_list[pauli_array[i]] for i in range(len(pauli_array)))
         return obs
 
     @classmethod
@@ -201,8 +212,18 @@ def test_jit():
     print(vmap(lambda ob: ob.trace())(observables))
     print(vmap(lambda ob: ob.is_ZType())(observables))
 
+def test_klocal():
+    key = PRNGKey(1234)
+    obs = PauliObservable.init_random(key, sample_indices=[1,2,3],
+                                      n=10, N=20)
+    print(obs.params)
+    obs2 = PauliObservable.init_random(key, sample_indices=[1,2],
+                                          n=10, N=20, k_local=3, padding_indices=[0,3])
+    print(obs2.params)
+
 if __name__ == "__main__":
-    test_jit()
+    #test_jit()
+    test_klocal()
 
     """@classmethod
     def qubit_wise_obs(cls):

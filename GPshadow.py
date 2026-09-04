@@ -22,9 +22,9 @@ import numpy as np
 
 class GPShadow(Shadow):
 
-    models: List[gpytorch.models.GP] | None = struct.field(pytree_node=False,
+    model_states: List[dict] | None = struct.field(pytree_node=False,
                                                     default=None)
-    likelihoods: List[gpytorch.likelihoods.Likelihood] | None = struct.field(pytree_node=False,
+    likelihood_states: List[dict] | None = struct.field(pytree_node=False,
                                                                       default=None)
     # Specifications for different args, training, etc.
     cfg: Dict = struct.field(pytree_node=False,
@@ -53,46 +53,62 @@ class GPShadow(Shadow):
 
 # train the GP here. Maybe rename this function in the base
     def create_snapshots(self) -> Shadow:
-        models = []
-        likelihoods = []
-        model_state = None
-        likelihood_state = None
-        for qstate in range(self.N_state_reps):
+        return self
+
+    def train_models(self, Ns: list[int]):
+        model_states = []
+        likelihood_states = []
+        qstate = 0
+        for N in Ns:
             # TODO: Turn into 'get_train_loader'
-            train_loader = get_train_set(self.indices[qstate],
-                                        self.outcomes[qstate])
+            train_loader = get_train_set(self.indices[qstate,:N],
+                                        self.outcomes[qstate,:N])
             
             model, train_x, train_y, likelihood = init_GP_model(train_loader, 
                                                                 self.cfg["kernel_type"],
                                                                 self.cfg["kernel_args"])
 
-            if self.cfg["share_parameters"] and \
-                (model_state is not None) and \
-                (likelihood_state is not None):
-                model.load_state_dict(model_state)
-                likelihood.state_dict(likelihood_state)
 
-            else:
-                model, likelihood = train_gp(self.cfg,
-                                        model, 
-                                        likelihood, 
-                                        train_x,
-                                        train_y)
-            if (model_state is None) or (likelihood_state is None):                
-                model_state = model.state_dict()
-                likelihood_state = likelihood.state_dict()
-
-            model.eval()
-            likelihood.eval()
-
-            models.append(model)
-            likelihoods.append(likelihood)
+            model, likelihood = train_gp(self.cfg,
+                                    model, 
+                                    likelihood, 
+                                    train_x,
+                                    train_y)              
+            
+            model_state = model.state_dict()
+            likelihood_state = likelihood.state_dict()
+            model_states.append(model_state)
+            likelihood_states.append(likelihood_state)
         
-        return self.replace(models=models, likelihoods=likelihoods)
+        return self.replace(model_states=model_states, 
+                            likelihood_states=likelihood_states)
 
-    def estimate_properties(self, obs: Observable, N: Array=jnp.array(0)) -> Array:
+    # TODO: Make dependent of N
+    def estimate_properties(self, obs: Observable, Ns: Array = jnp.array([0]), 
+                            batch_size: int | None = None) -> Array:
         x = Tensor(obs.params)
-        out = torch.stack([likelihood(model(x)).mean for model, likelihood in zip(self.models, self.likelihoods)])
+        outs = []
+        for qstate in range(self.N_state_reps):
+            outs_inner = []
+            for N in Ns:
+                # TODO: Turn into 'get_train_loader'
+                train_loader = get_train_set(self.indices[qstate,:N],
+                                            self.outcomes[qstate,:N])
+                
+                model, train_x, train_y, likelihood = init_GP_model(train_loader, 
+                                                                    self.cfg["kernel_type"],
+                                                                    self.cfg["kernel_args"])
+
+                
+                model.load_state_dict(self.model_states[qstate])
+                likelihood.load_state_dict(self.likelihood_states[qstate])
+
+                model.eval()
+                likelihood.eval()
+
+                outs_inner.append(likelihood(model(x)).mean)
+            outs.append(torch.stack(outs_inner))
+        out = torch.stack(outs)
         return jnp.asarray(out.detach().numpy())
 
     @classmethod

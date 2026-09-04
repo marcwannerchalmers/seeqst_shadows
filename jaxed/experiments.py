@@ -26,12 +26,12 @@ class ShadowScalingExperiment:
                   N_list=[], n_list=[], obs_lists:List[PauliObservable]=[],
                   gate_indices=lambda n: [0,2], estimator=lambda n, N: Estimator(),
                   N_state_reps: int=1, key=random.PRNGKey(12345), 
-                  verbose=False, state_batch_size=3) -> None:
+                  verbose=False, state_batch_size=3, path_save=None) -> None:
         self.shadow_cls = shadow_cls
         self.state_cls = state_cls
         self.shadow_args = shadow_args
         self.state_args = state_args
-        self.Ns = jnp.array(N_list)
+        self.Ns = jnp.array(N_list, dtype=int)
         self.ns = n_list
         self.N_state_reps = N_state_reps
         self.observables_list = []
@@ -46,6 +46,7 @@ class ShadowScalingExperiment:
         self.times = {"Create Shadow": [], "Predict": [], "Compute GT": [], "Total step": []}
         self.verbose = verbose
         self.state_batch_size = state_batch_size
+        self.path_save = path_save
         self.init(key)
 
     def init(self, key):
@@ -59,16 +60,16 @@ class ShadowScalingExperiment:
                                               **self.shadow_args)
                                 for i, n in enumerate(self.ns)]
     
-    def run(self, path_save=None):
+    def run(self):
         save_state = False
         experiments_loaded = False
-        if path_save is not None:
-            if os.path.isfile(path_save):
-                self.load_results(path_save)
+        if self.path_save is not None:
+            if os.path.isfile(self.path_save+".npy"):
+                self.load_results(self.path_save+".npy")
                 experiments_loaded = True
             else:
                 if self.verbose:
-                    print("Experiments will be saved as {}".format(path_save))
+                    print("Experiments will be saved as {}".format(self.path_save))
                 save_state = True
 
         if not experiments_loaded:
@@ -85,13 +86,16 @@ class ShadowScalingExperiment:
                 sample_fun = lambda shadow, states: shadow.sample(states)
                 return tree.map(sample_fun, shadows, states,
                                     is_leaf=leave_fun)
-            print("Sampling {} from {}-{} qubits".format(str(type(self.states[0])).split(".")[-1].split("\'")[0], 
+
+            if self.verbose:
+                print("Sampling {} from {}-{} qubits".format(str(type(self.states[0])).split(".")[-1].split("\'")[0], 
                                                                      min(self.ns), 
                                                                      max(self.ns)))
             start = time.time()
             self.shadows = sample_shadows(self.shadows, self.states)
             end = time.time()
-            print("Generating {} states x {} samples = {} total samples took {} s".format(len(self.ns)*self.N_state_reps,
+            if self.verbose:
+                print("Generating {} states x {} samples = {} total samples took {} s".format(len(self.ns)*self.N_state_reps,
                                                   max(self.Ns),
                                                   len(self.ns)*self.N_state_reps*max(self.Ns),
                                                   end-start))
@@ -128,23 +132,21 @@ class ShadowScalingExperiment:
                                                   obs_list, 
                                                   self.Ns,
                                                   self.state_batch_size)
-            print(self.preds.shape, self.gt.shape)
             end = time.time()
 
             print("Creating {} snapshots and processing them for {} observables each took {} s".format(len(self.ns)*self.N_state_reps*max(self.Ns),
                                                   self.observables_list[0].params.shape[0]*len(self.ns)*self.N_state_reps,
                                                   end-start))
 
-
         if save_state:
-            self.save_results(path_save)
+            self.save_results(self.path_save)
 
     def save_results(self, path: str):
         res = np.stack([self.gt, self.preds])
-        np.savetxt(path, res)
+        np.save(path, res)
 
     def load_results(self, path: str):
-        self.gt, self.preds = np.loadtxt(path)
+        self.gt, self.preds = np.load(path)
 
     def plot(self, mode="data_scaling", path_save=None, intermediate_plot=False):
         # TODO: Change this
@@ -165,46 +167,6 @@ class ShadowScalingExperiment:
             plt.legend()
             plt.show()
 
-        if path_save is not None:
-            plt.savefig(path_save)
-
-class Experiments:
-    def __init__(self, scaling_experiments: List[ShadowScalingExperiment],
-                 name_dict = None) -> None:
-        self.experiments = scaling_experiments
-        for exp in scaling_experiments:
-            exp.run() 
-        self.data = self.get_dataframe()
-
-    def get_dataframe(self):
-        data = {"Shadow model": [], "Observable": [], "Ground truth": [],
-                "Prediction": [], "Error": [], "N": [], "n": [], "State": []}
-        for experiment in self.experiments:        
-            # print(experiment.gt.shape, experiment.preds.shape)  
-            for j, (observables, n) in enumerate(zip(experiment.observables_list, experiment.ns)):
-                for k, obs in enumerate(observables):
-                    for i, N in enumerate(experiment.Ns):
-                        data["Shadow model"].append(re.search(r"\.(.*?)\'", str(experiment.shadow_cls))[1])
-                        data["Observable"].append(obs.get_name())
-                        data["Ground truth"].append(experiment.gt[i,j,k])
-                        data["Prediction"].append(experiment.preds[i,j,k])
-                        data["Error"].append(abs(experiment.gt[i,j,k]-experiment.preds[i,j,k]))
-                        data["N"].append(N)
-                        data["n"].append(n)
-                        state_name = str(experiment.state_cls) if experiment.state_name is None else experiment.state_name
-                        data["State"].append(state_name)
-
-        return pd.DataFrame(data)
-
-    # partial function with self.data fixed 
-    def plot(self, index_list=[], path_save=None, **lineplot_args):
-        data = np.asarray(self.data)
-        if len(index_list) > 0:
-            data = data[index_list]
-        sns.set_style('whitegrid')
-        res = sns.lineplot(data, **lineplot_args)
-        res.set(xscale='log')
-        plt.show()
         if path_save is not None:
             plt.savefig(path_save)
 

@@ -9,7 +9,7 @@ from jax.lax import cond
 class Estimator:
 
     def __call__(self, x: Array, N: Array=jnp.array(0)):
-        len_x = jnp.ones_like(x).sum()
+        len_x = jnp.ones_like(x, dtype=int).sum()
         N = cond((N <= 0) | (len_x < N),
                  lambda: len_x,
                  lambda: N)

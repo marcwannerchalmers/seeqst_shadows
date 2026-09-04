@@ -120,30 +120,31 @@ class Shadow(ABC, struct.PyTreeNode):
 
     def estimate_properties(self, obs: Observable, Ns: Array=jnp.array([0]),
                             batch_size: int | None=None)->Array:
+
         est_prop = lambda shadow, snapshots, obs: shadow.estimate_property(snapshots, obs, Ns)
         est_props = lambda snapshots: jax.vmap(est_prop,
                                                in_axes=(None, None,0))(self, 
                                                                        snapshots, 
                                                                        obs)
         props = lax.map(est_props, self.snapshots, batch_size=batch_size)
-        """jax.vmap(jax.vmap(est_prop,
-                                in_axes=(None, None,0)),
-                                in_axes=(None, 0, None))(self, 
-                                                   self.snapshots,
-                                                   obs)"""
-        return props
 
-    def predict(self, obs: Observable)->Array:
+        return props
+    
+
+    def predict(self, outcomes: Array, indices: Array, obs: Observable, Ns: Array=jnp.array([0]))->Array:
         U_treedef = jax.tree_util.tree_structure(self.Udag)
         obs_treedef = jax.tree_util.tree_structure(obs)
         inv_circuit = self._inverse_circuit(self.n, 
-                                                len(self.outcomes.shape)-2,
+                                                len(outcomes.shape)-2,
                                                 obs_treedef,
                                                 U_treedef)
-        inv_ocs = inv_circuit(self.outcomes, self.Udag, obs, self.indices)
-        preds = jax.vmap(self._inverse_channel, in_axes=(None,0,None))(self.n, inv_ocs, obs)
 
-        return self.estimator(preds)
+        inv_ocs = inv_circuit(outcomes, self.Udag, obs, indices)
+        props = jax.vmap(self._inverse_channel, in_axes=(None,0,None))(self.n, inv_ocs, obs)
+        pred_fun = lambda estimator, props, N: estimator(props, N)
+
+        return jax.vmap(pred_fun, 
+                        in_axes=(None, None, 0))(self.estimator, props, Ns)
 
     @classmethod
     @abstractmethod
@@ -350,7 +351,7 @@ class SEEQSTShadow(Shadow):
 class PauliShadow(Shadow):
 
     @classmethod
-    def init(cls, key: Array, n: int, N: int, N_state_reps:int, 
+    def init(cls, key: Array, n: int, N: int, N_state_reps:int, sample_idx_range: Array=jnp.array([0,3]),
                estimator: Estimator = Estimator(), *args, **kwargs):
         return super().init(key, n, N, N_state_reps, jnp.array([0,3]), estimator, *args, **kwargs)
 
@@ -415,9 +416,19 @@ class PauliShadow(Shadow):
     def create_snapshots(self) -> Shadow:
         return self
 
-    def estimate_properties(self, obs: Observable)->Array:
-        pred_fun = lambda shadow, obs: shadow.predict(obs)
-        return jax.vmap(jax.vmap(pred_fun, in_axes=(None, 0)), in_axes=(0,None))(self, obs)
+    def estimate_properties(self, obs: Observable, Ns: Array=jnp.array([0]),
+                                batch_size: int | None=None)->Array:
+        est_prop = lambda shadow, outcomes, indices, obs: shadow.predict(outcomes, indices, obs, Ns)
+        def est_props(ocind):
+            outcomes, indices = ocind
+            return jax.vmap(est_prop,
+                            in_axes=(None, None, None,0,))(self, 
+                                                    outcomes,
+                                                    indices, 
+                                                    obs)
+        
+        props = lax.map(est_props, (self.outcomes, self.indices), batch_size=batch_size)
+        return props
 
     @classmethod
     def inverse_circuit_clifford(cls, outcome: Array, ind: Array) -> Tableau:
