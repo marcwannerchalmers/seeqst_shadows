@@ -19,14 +19,15 @@ from jaxed.shadow import PauliShadow, CliffordShadow, SEEQSTShadow, Shadow
 from jaxed.tools.estimator import Estimator
 from jaxed.tools.observable import PauliObservable, Observable
 from jaxed.tools.state import HRState, State
+from GPshadow import GPShadow
 
 # TODO: Save the outcomes and load them if the path exists, printing what it ended up doing.
 class ShadowScalingExperiment:
     def __init__(self, shadow_cls: Type[Shadow], state_cls: Type[State], shadow_args={}, state_args={}, state_name=None,
                   N_list=[], n_list=[], obs_lists:List[PauliObservable]=[],
-                  gate_indices=lambda n: [0,2], estimator=lambda n, N: Estimator(),
+                  gate_indices=lambda n: jnp.array([0,2]), estimator=lambda n, N: Estimator(),
                   N_state_reps: int=1, key=random.PRNGKey(12345), 
-                  verbose=False, state_batch_size=3, path_save=None) -> None:
+                  verbose=False, state_batch_size=3, path_save=None, k_local=None) -> None:
         self.shadow_cls = shadow_cls
         self.state_cls = state_cls
         self.shadow_args = shadow_args
@@ -38,6 +39,8 @@ class ShadowScalingExperiment:
         if len(obs_lists) == len(self.ns):
             self.observables_list = obs_lists
 
+        self.k_local = k_local
+
         self.preds = jnp.zeros((len(self.Ns), len(self.ns), self.observables_list[0].params.shape[0]))
         self.gt = jnp.zeros_like(self.preds)
         self.gate_indices = gate_indices
@@ -46,7 +49,8 @@ class ShadowScalingExperiment:
         self.times = {"Create Shadow": [], "Predict": [], "Compute GT": [], "Total step": []}
         self.verbose = verbose
         self.state_batch_size = state_batch_size
-        self.path_save = path_save
+        self.path_save = "{}_nmax{}_N{}_reps{}_k{}".format(path_save, max(self.ns), max(self.Ns), self.N_state_reps,
+                                                           self.k_local)
         self.init(key)
 
     def init(self, key):
@@ -81,6 +85,7 @@ class ShadowScalingExperiment:
             self.shadows = tree.map(replace_fun, self.shadows, outcomes)"""
             # self.shadows = tree.map(sample_fun, self.shadows, self.states,
                                     # is_leaf=leave_fun)
+
             @jit
             def sample_shadows(shadows, states):
                 sample_fun = lambda shadow, states: shadow.sample(states)
@@ -110,28 +115,41 @@ class ShadowScalingExperiment:
             case2 = not jnp.array(tree.map(case2_fun, obs_list)).all()
             obs_axes = (None, 0) if case2 else (0,1)"""
             #-----------
-            @partial(jit, static_argnums=((4,)))
-            def compute_results(shadows, states, obs_list, Ns, batch_size):
-                snap_shot_fun = lambda shadow: shadow.create_snapshots()
-                shadows = tree.map(snap_shot_fun, shadows, is_leaf=leave_fun)
-                pred_fun = jit(lambda shadow, observables, Ns: shadow.estimate_properties(observables, Ns, batch_size))
+            if self.shadow_cls is GPShadow:
+                gts = []
+                preds = []
+                for obs, shadow, states in zip(obs_list, self.shadows, self.states):
+                    pred = shadow.estimate_properties(obs, self.Ns)
+                    gtru = shadow.ground_truth(states, obs)
+                    gtruth = jnp.stack([gtru for _ in range(self.Ns.shape[0])], axis=-1)
+                    preds.append(pred)
+                    gts.append(gtruth)
 
-                gt_fun = jit(lambda shadow, states, obs: shadow.ground_truth(states, obs))
-            
-                preds = jnp.array(tree.map(lambda shadow, observables: pred_fun(shadow, observables, Ns), 
-                                            shadows, 
-                                            obs_list, 
-                                            is_leaf=leave_fun))
-                gt = jnp.array(tree.map(gt_fun, shadows, states, obs_list, is_leaf=leave_fun))
-                gt = jnp.stack([gt for _ in range(Ns.shape[0])], axis=-1)
-                return preds, gt
-            print("Compiled")
-            start = time.time()
-            self.preds, self.gt = compute_results(self.shadows, 
-                                                  self.states, 
-                                                  obs_list, 
-                                                  self.Ns,
-                                                  self.state_batch_size)
+                self.gt = jnp.stack(gts)
+                self.preds = jnp.stack(preds)
+            else: 
+                @partial(jit, static_argnums=((4,)))
+                def compute_results(shadows, states, obs_list, Ns, batch_size):
+                    snap_shot_fun = lambda shadow: shadow.create_snapshots()
+                    shadows = tree.map(snap_shot_fun, shadows, is_leaf=leave_fun)
+                    pred_fun = jit(lambda shadow, observables, Ns: shadow.estimate_properties(observables, Ns, batch_size))
+
+                    gt_fun = jit(lambda shadow, states, obs: shadow.ground_truth(states, obs))
+                
+                    preds = jnp.array(tree.map(lambda shadow, observables: pred_fun(shadow, observables, Ns), 
+                                                shadows, 
+                                                obs_list, 
+                                                is_leaf=leave_fun))
+                    gt = jnp.array(tree.map(gt_fun, shadows, states, obs_list, is_leaf=leave_fun))
+                    gt = jnp.stack([gt for _ in range(Ns.shape[0])], axis=-1)
+                    return preds, gt
+                print("Compiled")
+                start = time.time()
+                self.preds, self.gt = compute_results(self.shadows, 
+                                                    self.states, 
+                                                    obs_list, 
+                                                    self.Ns,
+                                                    self.state_batch_size)
             end = time.time()
 
             print("Creating {} snapshots and processing them for {} observables each took {} s".format(len(self.ns)*self.N_state_reps*max(self.Ns),

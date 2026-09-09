@@ -31,7 +31,7 @@ def train_gp(cfg,
 
     model.train()
     likelihood.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-1)
     loss_fn = loss_cls(model, likelihood)
     # optimizer = torch.optim.LBFGS(model.parameters(), max_iter=1000, lr=0.0001)
 

@@ -55,7 +55,7 @@ class GPShadow(Shadow):
     def create_snapshots(self) -> Shadow:
         return self
 
-    def train_models(self, Ns: list[int]):
+    def train_models(self, Ns: Array):
         model_states = []
         likelihood_states = []
         qstate = 0
@@ -63,7 +63,6 @@ class GPShadow(Shadow):
             # TODO: Turn into 'get_train_loader'
             train_loader = get_train_set(self.indices[qstate,:N],
                                         self.outcomes[qstate,:N])
-            
             model, train_x, train_y, likelihood = init_GP_model(train_loader, 
                                                                 self.cfg["kernel_type"],
                                                                 self.cfg["kernel_args"])
@@ -80,36 +79,35 @@ class GPShadow(Shadow):
             model_states.append(model_state)
             likelihood_states.append(likelihood_state)
         
-        return self.replace(model_states=model_states, 
-                            likelihood_states=likelihood_states)
+        return model_states, likelihood_states
 
     # TODO: Make dependent of N
     def estimate_properties(self, obs: Observable, Ns: Array = jnp.array([0]), 
                             batch_size: int | None = None) -> Array:
+        model_states, likelihood_states = self.train_models(Ns)
         x = Tensor(obs.params)
         outs = []
         for qstate in range(self.N_state_reps):
             outs_inner = []
-            for N in Ns:
+            for i, N in enumerate(Ns):
                 # TODO: Turn into 'get_train_loader'
                 train_loader = get_train_set(self.indices[qstate,:N],
                                             self.outcomes[qstate,:N])
-                
                 model, train_x, train_y, likelihood = init_GP_model(train_loader, 
                                                                     self.cfg["kernel_type"],
                                                                     self.cfg["kernel_args"])
 
                 
-                model.load_state_dict(self.model_states[qstate])
-                likelihood.load_state_dict(self.likelihood_states[qstate])
+                model.load_state_dict(model_states[i])
+                likelihood.load_state_dict(likelihood_states[i])
 
                 model.eval()
                 likelihood.eval()
 
                 outs_inner.append(likelihood(model(x)).mean)
             outs.append(torch.stack(outs_inner))
-        out = torch.stack(outs)
-        return jnp.asarray(out.detach().numpy())
+        out = torch.stack(outs).permute(0,2,1)
+        return jnp.array(out.detach().numpy())
 
     @classmethod
     def _inverse_channel(cls, n: int, inv_oc: Array, obs: Observable) -> Array:
@@ -125,9 +123,9 @@ class GPShadow(Shadow):
         
 
 def testGPshadow():
-    n = 2
+    n = 5
     paulis = ["X"*n,"Y"*n, "Z"*n]
-    N = 16000
+    N = 2**14
     N_state_reps = 5
     obs = PauliObservable.init(paulis)
     key = jax.random.PRNGKey(1234)
@@ -144,7 +142,7 @@ def testGPshadow():
     start = time.time()
     shadow = shadow.create_snapshots()
     # shadow = shadow.train_models()
-    props = shadow.estimate_properties(obs)
+    props = shadow.estimate_properties(obs, Ns=[N])
     print(props)
     end = time.time()
     print(states.state_dm.shape)

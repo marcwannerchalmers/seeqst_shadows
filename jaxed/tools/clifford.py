@@ -44,7 +44,7 @@ class Tableau(struct.PyTreeNode):
     def H(self, i, condition: Array=jnp.array(True)):
         return cond(
             condition,
-            lambda s: s._H(i),
+            lambda s: s._Hadamard(i),
             lambda s: s,
             self,
         )
@@ -249,14 +249,19 @@ class Tableau(struct.PyTreeNode):
 
     @staticmethod
     def _single_Pauli90(pauli: Array, xi: Array, zi: Array):
-        xi_res = cond(pauli != 2,
-                      lambda: xi, # Id,RX,RZ
-                      lambda: (xi + zi) % 2 # RY
+        # The symplectic part is the same for +/- pi/2; only the sign differs.
+        xi_res = cond(pauli % 3 == 0,
+                      lambda: xi, # Id, RZ
+                      lambda: cond(pauli == 2,
+                                   lambda: zi, # RY
+                                   lambda: (xi + zi) % 2) # RX
                       )
 
-        zi_res = cond(pauli % 2 == 0, 
-                      lambda: zi, # Id, RY
-                      lambda: (xi + zi) % 2 # RX,RZ
+        zi_res = cond(pauli <= 1,
+                      lambda: zi, # Id, RX
+                      lambda: cond(pauli == 2,
+                                   lambda: xi, # RY
+                                   lambda: (xi + zi) % 2) # RZ
                       )
         
         r_res = cond(pauli < 2,
@@ -321,6 +326,99 @@ class Tableau(struct.PyTreeNode):
                     lambda: (-1)**stabilizer_phase(M,self.r[self.n:],a, p),
                     lambda: 0)
 
+    def sample(self, key: Array):
+        n = self.n
+        keys = jax.random.split(key, n)
+        x = self.tableau[:, :n]
+        z = self.tableau[:, n:]
+        outcome = jnp.zeros((n,), dtype=int)
+
+        def body_fun(a, val):
+            x, z, r, outcome = val
+            oc, x, z, r = Tableau._single_post_measurement_state(
+                keys[a], x, z, r, a, n
+            )
+            return x, z, r, outcome.at[a].set(oc)
+
+        _, _, _, outcome = fori_loop(0, n, body_fun, (x, z, self.r, outcome))
+        return outcome
+
+    @staticmethod
+    def _single_basis_sample(key, x: Array, z: Array, r: Array, a: Array, n: int):
+        oc, _, _, _ = Tableau._single_post_measurement_state(key, x, z, r, a, n)
+        return oc
+
+    @staticmethod
+    def _single_post_measurement_state(key: Array, x: Array, z: Array, r: Array, a: Array, n: int):
+        condition = (x[n:,a] == 1).any()
+        def case1(x, z, r):
+            # `argmax` returns the first stabilizer row with x[p, a] == 1.
+            p = jnp.argmax(x[n:,a]) + n
+            xp, zp, rp = x[p], z[p], r[p]
+
+            def cond_rowsum(i, xh, zh, rh):
+                return cond(
+                    (i != p) & (xh[a] == 1),
+                    lambda: Tableau._rowsum(xh, zh, rh, xp, zp, rp),
+                    lambda: (xh, zh, rh),
+                )
+
+            x, z, r = vmap(cond_rowsum)(jnp.arange(2*n), x, z, r)
+
+            x, z, r = x.at[p-n].set(x[p]), z.at[p-n].set(z[p]), r.at[p-n].set(r[p])
+            x, z = x.at[p].set(0), z.at[p].set(0)
+            z = z.at[p,a].set(1)
+            r = r.at[p].set(jax.random.randint(key, (), 0, 2))
+            return r[p], x, z, r
+
+        def case2(x, z, r):
+            init_val = (
+                jnp.zeros((n,), dtype=x.dtype),
+                jnp.zeros((n,), dtype=z.dtype),
+                jnp.array(0, dtype=r.dtype),
+            )
+
+            def body_fun(i, scratch):
+                return cond(
+                    x[i,a] == 1,
+                    lambda: Tableau._rowsum(
+                        *scratch, x[i+n], z[i+n], r[i+n]
+                    ),
+                    lambda: scratch,
+                )
+
+            _, _, rh = fori_loop(0, n, body_fun, init_val)
+
+            return rh, x,z,r
+
+        oc, x,z,r = cond(condition,
+                     case1,
+                     case2,
+                     x,z,r)
+
+        return oc, x,z,r
+
+
+
+    @staticmethod
+    def _rowsum(xh: Array, zh: Array, rh: Array,
+                xi: Array, zi: Array, ri: Array):
+
+        def g(x1,z1,x2,z2):
+            return cond((x1 == 0),
+                 lambda: cond(z1==0,
+                              lambda: 0, # x1 == 0 and z1 == 0
+                              lambda: x2*(1-2*z2)), # x1 == 0 and z1 == 1
+                 lambda: cond(z1==0,
+                              lambda: z2*(2*x2-1), # x1 == 1 and z1 == 0
+                              lambda: z2-x2) # x1 == 1 and z1 == 1
+                 )
+
+        g_vals = vmap(g)(xi,zi,xh,zh)
+        phase = (2*rh + 2*ri + jnp.sum(g_vals, axis=-1)) % 4
+        rh = phase // 2
+        return (xh + xi) % 2, (zh + zi) % 2, rh
+
 
 # Convention for Pauli vector : I: 0, X: 1, Y: 2, Z: 3
 # TODO: Change the convention everywhere in the future
@@ -343,41 +441,44 @@ def _tableau_row_to_paulivector(row_x: Array, row_z: Array):
 def _all_equal(x: Array, y: Array):
     return (x == y).all()
 
-# TODO: reverse
 def F(tableau: Tableau, pauli_indices: Array, Gamma: Array, Delta: Array)->Tableau:
     n = Gamma.shape[0]
-    tableau = tableau.MultiSdag(Gamma.diagonal())
-    tableau = tableau.MultiPauli(pauli_indices)
-    # Delta is lower triangular
-    def body_iCZ(i: int, tableau: Tableau):
-        def body_j(j: int, tableau: Tableau):
-            return tableau.CZ(i,j, Gamma[i,j] == 1) # reversed loop
 
-        return fori_loop(0, i, body_j, tableau)
+    # Match utils.F: traverse the lower triangles in descending order.
+    def body_iCX(k: int, tableau: Tableau):
+        i = n - 1 - k
 
-    tableau = fori_loop(0, n, body_iCZ, tableau)
-
-    # Delta is lower triangular
-    def body_iCX(i: int, tableau: Tableau):
-        def body_j(j: int, tableau: Tableau):
-            return tableau.CNOT(i,j, Delta[i,j] == 1) # reversed loop
+        def body_j(l: int, tableau: Tableau):
+            j = i - 1 - l
+            return tableau.CNOT(i, j, Delta[i,j] == 1)
 
         return fori_loop(0, i, body_j, tableau)
 
     tableau = fori_loop(0, n, body_iCX, tableau)
+
+    def body_iCZ(k: int, tableau: Tableau):
+        i = n - 1 - k
+
+        def body_j(l: int, tableau: Tableau):
+            j = i - 1 - l
+            return tableau.CZ(i, j, Gamma[i,j] == 1)
+
+        return fori_loop(0, i, body_j, tableau)
+
+    tableau = fori_loop(0, n, body_iCZ, tableau)
+    tableau = tableau.MultiPauli(pauli_indices)
+    tableau = tableau.MultiS(Gamma.diagonal())
     return tableau
 
-# TODO: reverse
 def canonical_form(tableau: Tableau, Gamma: Array, Delta: Array, 
                    Gammad: Array, Deltad: Array, 
                    h: Array, pauli_indices: Array,
                    S: Array) -> Tableau:
     n = Gamma.shape[0]
-    tableau = F_rev(tableau, jnp.zeros((n,), dtype=int), Gamma, Delta)
+    tableau = F(tableau, pauli_indices, Gammad, Deltad)
+    tableau = tableau.Permute(S)
     tableau = tableau.MultiHadamard(h)
-    tableau = tableau.Permute(jnp.argsort(S))
-
-    tableau = F_rev(tableau, pauli_indices, Gammad, Deltad)
+    tableau = F(tableau, jnp.zeros((n,), dtype=int), Gamma, Delta)
 
     return tableau
 
@@ -451,7 +552,6 @@ def GHZ_type_state_clifford(selective_block: Array,
     sorted_indices = jnp.argsort(selective_block, descending=True) 
     sorted_vals = selective_block[sorted_indices] 
     
-    # TODO: Add this with the reversed argument to clifford
     def body_fun(i, tableau: Tableau):
         ind = n-2-i # reversed order 
         return tableau.CNOT(sorted_indices[ind],
@@ -466,6 +566,8 @@ def GHZ_type_state_clifford(selective_block: Array,
                                sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0
     
     return tableau
+
+
 
 def test_sim():
     n = 5

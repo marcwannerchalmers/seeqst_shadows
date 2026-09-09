@@ -112,7 +112,7 @@ class GHZType(State):
     @classmethod
     def init_random(cls, key: Array, N_state: int, n: int) -> State:
         blocks = random.randint(key, (N_state, n+1), 0, 2)
-        return vmap(cls.init)(blocks[:,:n], blocks[:,n:])
+        return vmap(cls.init)(blocks[:,:n], blocks[:,n])
 
     @classmethod
     def init(cls, selective_block: Array, xy: Array) -> State:

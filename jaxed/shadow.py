@@ -14,7 +14,7 @@ from jaxed.tools.utils import build_parallel_entangler_blocks, build_parallel_en
                               permutation_to_swaps
 
 from jaxed.tools.observable import Observable, PauliObservable, QP_OBS_LIST
-from jaxed.tools.state import State, HRState
+from jaxed.tools.state import State, HRState, GHZType
 import pennylane as qp
 from pennylane import qjit
 from pennylane.typing import TensorLike
@@ -32,7 +32,7 @@ from functools import partial, lru_cache
 import time
 import catalyst
 from jaxed.tools import clifford
-from jaxed.tools.clifford import Tableau, GHZ_type_state_clifford_rev
+from jaxed.tools.clifford import Tableau, GHZ_type_state_clifford, GHZ_type_state_clifford_rev
 from jaxed.tools.distributions import uniform
 
 
@@ -47,7 +47,7 @@ class Shadow(ABC, struct.PyTreeNode):
     # n: number of qubits
     # sample_idx_range: indices the U(.) method can take. Can also give as a (multidim-) range [min, max] (latter is default)
     estimator: Estimator
-    sample_idx_range: Array = struct.field(pytree_node=False)
+    sample_idx_range: Array # = struct.field(pytree_node=False)
     indices: Array
     outcomes: Array
     U: PartialCircuit
@@ -62,10 +62,11 @@ class Shadow(ABC, struct.PyTreeNode):
                *args, **kwargs):
 
         keys = random.split(key, N_state_reps)
-        in_axes = tuple([0]+[None]*(2+len(args)+len(kwargs)))
-        indices = jax.vmap(cls.sample_indices, in_axes=in_axes)(keys, (N,n), 
-                                                                sample_idx_range,
-                                                                *args, **kwargs)
+        in_axes = tuple([0]+[None]*(2+len(args)))
+        def sample_idx(keys):
+            return cls.sample_indices(keys, (N, n), sample_idx_range, *args, **kwargs)
+
+        indices = jax.vmap(sample_idx)(keys)
 
         kwargs.pop('n', None)
         kwargs.pop('N', None)
@@ -100,6 +101,29 @@ class Shadow(ABC, struct.PyTreeNode):
         outcomes = jax.vmap(create_samples, in_axes=(None, 0,0))(self, self.indices, states)
         return self.replace(outcomes=outcomes)
 
+    def sample_clifford(self, key, states):
+        def create_state(state):
+            tableau = Tableau.create(self.n)
+            tableau = state.clifford(tableau)
+            return tableau
+
+        # Order is different now from the convention used in the Tableau constructor
+        tableaus = jax.vmap(create_state)(states)
+        keys = random.split(key, (self.N_state_reps, self.N))
+
+        def create_sample(shadow: Shadow, key, index, tableau):
+            tableau = shadow.circuit_clifford(index, tableau)
+            return tableau.sample(key)
+
+        outcomes = jax.vmap(jax.vmap(create_sample,
+                                     in_axes=(None,0,0,None)),
+                                     in_axes=(None,0,0,0))(self,
+                                                              keys,
+                                                              self.indices,
+                                                              tableaus)
+        return self.replace(outcomes=outcomes)
+
+
     def create_snapshots(self)->Shadow:
         snapshots = jax.vmap(jax.vmap(self.inverse_circuit_clifford))(self.outcomes,
                                                                      self.indices)
@@ -122,14 +146,33 @@ class Shadow(ABC, struct.PyTreeNode):
                             batch_size: int | None=None)->Array:
 
         est_prop = lambda shadow, snapshots, obs: shadow.estimate_property(snapshots, obs, Ns)
-        est_props = lambda snapshots: jax.vmap(est_prop,
-                                               in_axes=(None, None,0))(self, 
-                                                                       snapshots, 
-                                                                       obs)
-        props = lax.map(est_props, self.snapshots, batch_size=batch_size)
 
-        return props
-    
+        condition = obs.params.shape[0] == self.N_state_reps
+
+        def est_props_sameobs(snapobs):
+            snapshots, obs = snapobs
+            est_props = lambda snapshots: jax.vmap(est_prop,
+                                                in_axes=(None, None,0))(self, 
+                                                                        snapshots, 
+                                                                        obs)
+            props = lax.map(est_props, snapshots, batch_size=batch_size)
+            return props
+
+        def est_props_diffobs(snapobs):
+            est_props = lambda snapobs: jax.vmap(est_prop,
+                                                in_axes=(None, None,0))(self, 
+                                                                        snapobs[0], 
+                                                                        snapobs[1])
+
+            props = lax.map(est_props, snapobs, batch_size=batch_size)
+            return props
+
+        snapobs = (self.snapshots, obs)
+        if condition:
+            return est_props_diffobs(snapobs)
+        
+        return est_props_sameobs(snapobs)
+
 
     def predict(self, outcomes: Array, indices: Array, obs: Observable, Ns: Array=jnp.array([0]))->Array:
         U_treedef = jax.tree_util.tree_structure(self.Udag)
@@ -149,6 +192,11 @@ class Shadow(ABC, struct.PyTreeNode):
     @classmethod
     @abstractmethod
     def inverse_circuit_clifford(cls, outcome: Array, ind: Array) -> Tableau:
+        pass
+
+    @classmethod
+    @abstractmethod
+    def circuit_clifford(cls, ind: Array, tableau: Tableau) -> Tableau:
         pass
 
     # shortcut to give U additional arguments
@@ -218,7 +266,7 @@ class Shadow(ABC, struct.PyTreeNode):
     @lru_cache(None)
     def _gt_circuit(n: int, state_treedef, obs_treedef):
         obs_axes = obs_treedef.unflatten(
-                    [None] * state_treedef.num_leaves
+                    [None] * obs_treedef.num_leaves
                 )
         state_axes = state_treedef.unflatten(
             [0] * state_treedef.num_leaves
@@ -323,6 +371,13 @@ class SEEQSTShadow(Shadow):
         return tableau
 
     @classmethod
+    def circuit_clifford(cls, ind: Array, tableau: Tableau) -> Tableau:
+        n = tableau.r.shape[-1] // 2
+        selective_block, xy = ind[:n], ind[n]
+        tableau = GHZ_type_state_clifford(selective_block, xy, tableau)
+        return tableau
+
+    @classmethod
     def _inverse_channel(cls, n: int, inv_oc: Array, obs: Observable) -> Array:
         if not isinstance(obs, PauliObservable):
                     raise NotImplementedError()
@@ -364,6 +419,12 @@ class PauliShadow(Shadow):
             elif ind[i] == 1:
                 qp.adjoint(qp.S)(i)
                 qp.Hadamard(i)
+
+    @classmethod
+    def circuit_clifford(cls, ind: Array, tableau: Tableau) -> Tableau:
+        tableau = tableau.MultiSdag(ind == 1)
+        tableau = tableau.MultiHadamard(ind < 2)
+        return tableau
 
     @staticmethod
     def Udag_fun(ind: Array, **kwargs):
@@ -519,13 +580,23 @@ class CliffordShadow(Shadow):
         return qjit(autograph=True)(circuits)
 
     @classmethod
-    def inverse_circuit_clifford(cls, outcome: Array, ind: Array) -> Tableau:
-        n = outcome.shape[-1]
-        tableau = Tableau.create(n)
-        tableau = tableau.MultiPauli(outcome)
+    def circuit_clifford(cls, ind: Array, tableau: Tableau) -> Tableau:
+        n = tableau.r.shape[-1] // 2
         gammadelta = [ind[:,i*n:(i+1)*n] for i in range(4)]
         hO = [ind[:,4*n+i] for i in range(2)]
         S = ind[:,4*n+4]
+        tableau = clifford.canonical_form(tableau, *gammadelta, *hO, S)
+
+        return tableau
+
+    @classmethod
+    def inverse_circuit_clifford(cls, outcome: Array, ind: Array) -> Tableau:
+        n = outcome.shape[-1]
+        gammadelta = [ind[:,i*n:(i+1)*n] for i in range(4)]
+        hO = [ind[:,4*n+i] for i in range(2)]
+        S = ind[:,4*n+4]
+        tableau = Tableau.create(n)
+        tableau = tableau.MultiPauli(outcome)
         tableau = clifford.canonical_form_rev(tableau, *gammadelta, *hO, S)
 
         return tableau
@@ -779,6 +850,36 @@ def test_pauli_new():
     print(shadow.ground_truth(states, obs).T)
     print(end-start)
 
+def test_clifford_ghz():
+    n = 3
+    paulis = ["X"*n,"Y"*n, "Z"*n]
+    N = 30000
+    N_state_reps = 30
+    obs = PauliObservable.init(paulis)
+    key = jax.random.PRNGKey(1234)
+    key, key2 = jax.random.split(key)
+    states = GHZType.init_random(key, N_state_reps, n)
+    print("started timing")
+    start = time.time()
+    shadow = SEEQSTShadow.init(key, n, N, N_state_reps)
+    shadow = shadow.sample_clifford(key2, states)
+    end = time.time()
+    print(end-start)
+    print("sampled")
+    start = time.time()
+    @jit
+    def fun(shadow, obs):
+        shadow = jit(shadow.create_snapshots)()
+        props = jit(shadow.estimate_properties)(obs)
+        return props
+
+    out = fun(shadow, obs)
+    print(out[:,:,0])
+    end = time.time()
+    # print(states.state_dm.shape)
+    print(shadow.ground_truth(states, obs))
+    print(end-start)
+
 ################################
 
 
@@ -790,9 +891,9 @@ if __name__ == "__main__":
     # test_pauli_jaxed()
     # test_seeqst_shadow()
     # test_clifford_sim()
-    test_seeqst_sim()
+    # test_seeqst_sim()
     # test_pauli_new()
+    test_clifford_ghz()
     
 
     
-
