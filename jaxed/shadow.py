@@ -56,7 +56,7 @@ class Shadow(ABC, struct.PyTreeNode):
     device: str = struct.field(pytree_node=False,
                                default="lightning.qubit")
     simulator: str = struct.field(pytree_node=False,
-                                  default="statevector")
+                                  default="pennylane")
 
     # create shadow from N state samples
     @classmethod
@@ -64,7 +64,7 @@ class Shadow(ABC, struct.PyTreeNode):
                 sample_idx_range: Array=jnp.array([]), 
                estimator: Estimator=Estimator(), 
                device: str= "lightning.qubit",
-               simulator: str="statevector",
+               simulator: str="pennylane",
                *args, **kwargs):
 
         keys = random.split(key, N_state_reps)
@@ -105,7 +105,7 @@ class Shadow(ABC, struct.PyTreeNode):
         return outcomes
 
     def sample(self, key, states):
-        if self.simulator == "statevector":
+        if self.simulator == "pennylane":
             return self.sample_statevector(states)
         elif self.simulator == "clifford":
             return self.sample_clifford(key, states)
@@ -375,7 +375,7 @@ class SEEQSTShadow(Shadow):
                estimator: Estimator=Estimator(), 
                distribution: Callable=uniform,
                device: str="lightning.qubit",
-               simulator: str="statevector",
+               simulator: str="pennylane",
                block_probability: float | None=None,
                *args, **kwargs):
         if block_probability is None:

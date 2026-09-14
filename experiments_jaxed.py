@@ -444,7 +444,7 @@ def example_experiment(n, k):
     experiments.plot_avg_var(path_save="results/scaling_n{}_Nobs{}_reps{}_N{}.pdf".format(n,N_obs,reps,max(Ns)),
                              xlog=True, ylog=True)
 
-def example_experiment_batched(n, k):
+def example_experiment_batched(n, k, bs_state=1, bs_obs=1, bs_N=1):
     if not 0 < k < n:
         raise ValueError("The tuned binomial experiment requires 0 < k < n")
 
@@ -466,21 +466,22 @@ def example_experiment_batched(n, k):
     experiments_list=[]
     for i, shadow_cls in enumerate(shadow_classes):
         key, key2 = random.split(key)
-        shadow_args = {} # {"full_setting": False} if shadow_cls == SEEQSTShadow else {}
+        shadow_args = {}#{"device": "lightning.gpu"} # {"full_setting": False} if shadow_cls == SEEQSTShadow else {}
         exp = ShadowScalingExperiment(shadow_cls, HRState, shadow_args=shadow_args, state_name=state_name,
                                             N_list=Ns, n_list=ns, obs_lists=obs_lists, N_state_reps=reps,
                                             verbose=True, key=key2, path_save=data_paths[i],
-                                            state_batch_size=2, batch_size_obs=5, batch_size_N=1024,
+                                            state_batch_size=bs_state, batch_size_obs=bs_obs, batch_size_N=bs_N,
                                             experiment_name=experiment_names[i]
                                             )
         experiments_list.append(exp)
     # For observables with exactly k X/Y factors, q=k/n maximizes the
     # probability q**k * (1-q)**(n-k) of drawing the useful block mask.
-    experiments_list.append(ShadowScalingExperiment(SEEQSTShadow, HRState, shadow_args={"distribution": partial(binomial, q=q)},
+    experiments_list.append(ShadowScalingExperiment(SEEQSTShadow, HRState, 
+                                                    shadow_args={"distribution": partial(binomial, q=q)},
                                                     state_name=state_name,
                                                     N_list=Ns, n_list=ns, obs_lists=obs_lists, N_state_reps=reps,
                                                     verbose=True, key=key2, path_save=data_paths[3],
-                                                    state_batch_size=2, batch_size_obs=5, batch_size_N=1024,
+                                                    state_batch_size=bs_state, batch_size_obs=bs_obs, batch_size_N=bs_N,
                                                     experiment_name=experiment_names[3]
                                                     ))
     experiments = Experiments(experiments_list)
@@ -496,5 +497,5 @@ if __name__ == "__main__":
     test_multiple_hom_paulis(10)
     test_multiple_hom_paulis_klocal(10,2)"""
     # XY_combos(6)
-    example_experiment_batched(6, 5)
-    # example_experiment(6, 5)
+    example_experiment_batched(15, 5, 1, 50, 4096)
+    # example_experiment(15, 14)

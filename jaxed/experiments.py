@@ -188,7 +188,7 @@ class ShadowScalingExperiment:
                 sample_idx_range: Array=jnp.array([]), 
                estimator: Estimator=Estimator(), 
                device: str= "lightning.qubit",
-               simulator: str="statevector",
+               simulator: str="pennylane",
                **kwargs):
             return self.shadow_cls.init(key=key, n=n, N=N, N_state_reps=N_state_reps, 
                                         sample_idx_range=sample_idx_range, estimator=estimator,
