@@ -33,7 +33,7 @@ import time
 import catalyst
 from jaxed.tools import clifford
 from jaxed.tools.clifford import Tableau, GHZ_type_state_clifford, GHZ_type_state_clifford_rev
-from jaxed.tools.distributions import uniform
+from jaxed.tools.distributions import uniform, binomial
 
 
 large_width = 400
@@ -53,12 +53,18 @@ class Shadow(ABC, struct.PyTreeNode):
     U: PartialCircuit
     Udag: PartialCircuit
     snapshots: Tableau | None
+    device: str = struct.field(pytree_node=False,
+                               default="lightning.qubit")
+    simulator: str = struct.field(pytree_node=False,
+                                  default="statevector")
 
     # create shadow from N state samples
     @classmethod
     def init(cls, key: Array, n: int, N: int, N_state_reps: int=1, 
                 sample_idx_range: Array=jnp.array([]), 
-               estimator: Estimator=Estimator(),
+               estimator: Estimator=Estimator(), 
+               device: str= "lightning.qubit",
+               simulator: str="statevector",
                *args, **kwargs):
 
         keys = random.split(key, N_state_reps)
@@ -82,7 +88,9 @@ class Shadow(ABC, struct.PyTreeNode):
                    indices=indices, outcomes=jnp.empty(shape),
                    U=PartialCircuit(cls.U_fun, static_args={**static_args}, dynamic_args={**dynamic_args}),
                    Udag=PartialCircuit(cls.Udag_fun, static_args={**static_args}, dynamic_args={**dynamic_args}),
-                   snapshots=Tableau.create(n,N,N_state_reps)
+                   snapshots=Tableau.create(n,N,N_state_reps),
+                   device=device,
+                   simulator=simulator
                    )
         
         return instance
@@ -91,12 +99,18 @@ class Shadow(ABC, struct.PyTreeNode):
     def _sample(self, indices, state):
         U_treedef = jax.tree_util.tree_structure(self.U)
         state_treedef = jax.tree_util.tree_structure(state)
-        circuit = self._sample_circuit(self.n, U_treedef, state_treedef)
+        circuit = self._sample_circuit(self.n, U_treedef, state_treedef, self.device)
         outcomes = circuit(indices, self.U, state)[:,0]
 
         return outcomes
 
-    def sample(self, states):
+    def sample(self, key, states):
+        if self.simulator == "statevector":
+            return self.sample_statevector(states)
+        elif self.simulator == "clifford":
+            return self.sample_clifford(key, states)
+
+    def sample_statevector(self, states):
         create_samples = lambda shadow, indices, state: shadow._sample(indices, state)
         outcomes = jax.vmap(create_samples, in_axes=(None, 0,0))(self, self.indices, states)
         return self.replace(outcomes=outcomes)
@@ -131,24 +145,26 @@ class Shadow(ABC, struct.PyTreeNode):
         return self.replace(snapshots=snapshots)
 
     # Assuming that tableaus has batch dim N
-    def estimate_property(self, snapshots: Array, obs: Observable, Ns: Array=jnp.array([0])):
+    def estimate_weak_property(self, snapshots: Array, obs: Observable):
         est_prop = lambda tableau, obs: self._inverse_channel(self.n, 
                                                               tableau.expval(obs.params), 
                                                               obs)
         props = jax.vmap(est_prop,
                         in_axes=(0,None))(snapshots,
                                           obs)
+        return props
+
+    def estimate_property(self, snapshots: Array, obs: Observable, Ns: Array=jnp.array([0])):
+        props = self.estimate_weak_property(snapshots, obs)
         pred_fun = lambda estimator, props, N: estimator(props, N)
         return jax.vmap(pred_fun, 
                         in_axes=(None, None, 0))(self.estimator, props, Ns)
 
-    def estimate_properties(self, obs: Observable, Ns: Array=jnp.array([0]),
-                            batch_size: int | None=None)->Array:
-
-        est_prop = lambda shadow, snapshots, obs: shadow.estimate_property(snapshots, obs, Ns)
-
+    def estimate_weak_properties(self, obs: Observable,
+                                batch_size: int | None=None)->Array:
+        
         condition = obs.params.shape[0] == self.N_state_reps
-
+        est_prop = lambda shadow, snapshots, obs: shadow.estimate_weak_property(snapshots, obs)
         def est_props_sameobs(snapobs):
             snapshots, obs = snapobs
             est_props = lambda snapshots: jax.vmap(est_prop,
@@ -157,37 +173,77 @@ class Shadow(ABC, struct.PyTreeNode):
                                                                         obs)
             props = lax.map(est_props, snapshots, batch_size=batch_size)
             return props
-
+        
         def est_props_diffobs(snapobs):
             est_props = lambda snapobs: jax.vmap(est_prop,
                                                 in_axes=(None, None,0))(self, 
                                                                         snapobs[0], 
                                                                         snapobs[1])
-
+        
             props = lax.map(est_props, snapobs, batch_size=batch_size)
             return props
-
+        
         snapobs = (self.snapshots, obs)
         if condition:
             return est_props_diffobs(snapobs)
         
         return est_props_sameobs(snapobs)
 
+    def estimate_properties(self, obs: Observable, Ns: Array=jnp.array([0]),
+                            batch_size: int | None=None)->Array:
+        weak_props = self.estimate_weak_properties(obs, batch_size)
+        estimate_Ns = lambda weak_prop: jax.vmap(
+            lambda N: self.estimator(weak_prop, N)
+        )(Ns)
+        estimate_observables = jax.vmap(estimate_Ns)
+        props = lax.map(estimate_observables, weak_props, batch_size=batch_size)
+        return props
 
-    def predict(self, outcomes: Array, indices: Array, obs: Observable, Ns: Array=jnp.array([0]))->Array:
+    def predict_weak(self, outcomes, indices, obs):
         U_treedef = jax.tree_util.tree_structure(self.Udag)
         obs_treedef = jax.tree_util.tree_structure(obs)
-        inv_circuit = self._inverse_circuit(self.n, 
-                                                len(outcomes.shape)-2,
-                                                obs_treedef,
-                                                U_treedef)
 
-        inv_ocs = inv_circuit(outcomes, self.Udag, obs, indices)
-        props = jax.vmap(self._inverse_channel, in_axes=(None,0,None))(self.n, inv_ocs, obs)
+        inv_circuit = self._inverse_circuit(
+            self.n,
+            len(outcomes.shape) - 2,
+            obs_treedef,
+            U_treedef,
+            self.device,
+        )
+
+        inv_ocs = inv_circuit(
+            outcomes,
+            self.Udag,
+            obs,
+            indices,
+        )
+
+        props = jax.vmap(
+            self._inverse_channel,
+            in_axes=(None, 0, None),
+        )(self.n, inv_ocs, obs)
+
+        return props
+
+    def predict(
+        self,
+        outcomes,
+        indices,
+        obs,
+        Ns=jnp.array([0]),
+    ):
+        props = self.predict_weak(
+            outcomes,
+            indices,
+            obs,
+        )
+
         pred_fun = lambda estimator, props, N: estimator(props, N)
 
-        return jax.vmap(pred_fun, 
-                        in_axes=(None, None, 0))(self.estimator, props, Ns)
+        return jax.vmap(
+            pred_fun,
+            in_axes=(None, None, 0),
+        )(self.estimator, props, Ns)
 
     @classmethod
     @abstractmethod
@@ -238,12 +294,13 @@ class Shadow(ABC, struct.PyTreeNode):
 
     @classmethod
     @abstractmethod
-    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef) -> Callable[..., Any]:
+    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef,
+                         device: str) -> Callable[..., Any]:
         pass
 
     @staticmethod
     @lru_cache(None)
-    def _sample_circuit(n: int, U_treedef, state_treedef):
+    def _sample_circuit(n: int, U_treedef, state_treedef, device: str):
         U_axes = U_treedef.unflatten(
             [None] * U_treedef.num_leaves
         )
@@ -252,7 +309,7 @@ class Shadow(ABC, struct.PyTreeNode):
         )
 
         @qp.set_shots(1)
-        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+        @qp.qnode(qp.device(device, wires=range(n)))
         def circuit(ind, U, state):
             state()
             U(ind)
@@ -264,7 +321,7 @@ class Shadow(ABC, struct.PyTreeNode):
     ###################################
     @staticmethod
     @lru_cache(None)
-    def _gt_circuit(n: int, state_treedef, obs_treedef):
+    def _gt_circuit(n: int, state_treedef, obs_treedef, device: str):
         obs_axes = obs_treedef.unflatten(
                     [None] * obs_treedef.num_leaves
                 )
@@ -272,7 +329,7 @@ class Shadow(ABC, struct.PyTreeNode):
             [0] * state_treedef.num_leaves
         )
 
-        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+        @qp.qnode(qp.device(device, wires=range(n), c_dtype=jnp.complex64))
         def circuit(state, obs):
             state()
             obs.circuit()
@@ -283,11 +340,13 @@ class Shadow(ABC, struct.PyTreeNode):
     def _ground_truth(self, states: State, obs: Observable):
         state_treedef = jax.tree_util.tree_structure(states)
         obs_treedef = jax.tree_util.tree_structure(obs)
-        circuit = self._gt_circuit(self.n, state_treedef, obs_treedef)
+        circuit = self._gt_circuit(self.n, state_treedef, obs_treedef, self.device)
         return circuit(states, obs)
 
     def ground_truth(self, states: State, observables: Observable):
         return jax.vmap(self._ground_truth, in_axes=(None,0), out_axes=1)(states, observables)
+
+    # TODO: Implement Clifford ground truth. Make it depend on n and remove it from shadow class
 
     ####################################
 
@@ -302,6 +361,11 @@ class SEEQSTShadow(Shadow):
     # Might need to introduce an additional variable if the compiler complains
     full_setting: bool = struct.field(pytree_node=False,
                                       default=False)
+    # Bernoulli probability used for each entry of the selective block.  This
+    # must agree with the sampling distribution because it fixes the
+    # measurement-channel eigenvalues used during reconstruction.
+    block_probability: float = struct.field(pytree_node=False,
+                                            default=0.5)
 
     # First n bits of self.indices are for the block encoding, the last one is for the setting
     # redefine this to avoid an extra pass of n
@@ -310,8 +374,30 @@ class SEEQSTShadow(Shadow):
                sample_idx_range: Array=jnp.array([0,2]), 
                estimator: Estimator=Estimator(), 
                distribution: Callable=uniform,
+               device: str="lightning.qubit",
+               simulator: str="statevector",
+               block_probability: float | None=None,
                *args, **kwargs):
-        return super().init(key, n, N, N_state_reps, sample_idx_range, estimator, distribution)
+        if block_probability is None:
+            if distribution is uniform:
+                block_probability = 0.5
+            elif (isinstance(distribution, partial)
+                  and distribution.func is binomial
+                  and distribution.keywords is not None
+                  and "q" in distribution.keywords):
+                block_probability = float(distribution.keywords["q"])
+            else:
+                raise ValueError(
+                    "block_probability must be provided for a custom SEEQST "
+                    "sampling distribution"
+                )
+
+        if not 0.0 < block_probability < 1.0:
+            raise ValueError("block_probability must lie strictly between 0 and 1")
+
+        shadow = super().init(key, n, N, N_state_reps, sample_idx_range,
+                              estimator, device, simulator, distribution)
+        return shadow.replace(block_probability=block_probability)
 
     # Distribution has to be a function matching the pattern below and return SEEQST binary indices
     # of shape (N, n+1)
@@ -341,7 +427,8 @@ class SEEQSTShadow(Shadow):
 
     @classmethod
     @lru_cache(None)
-    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef) -> Callable[..., Any]:
+    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef,
+                         device: str) -> Callable[..., Any]:
         obs_axes = obs_treedef.unflatten(
             [None] * obs_treedef.num_leaves
         )
@@ -350,7 +437,7 @@ class SEEQSTShadow(Shadow):
                     [None] * U_treedef.num_leaves
                 )
 
-        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+        @qp.qnode(qp.device(device, wires=range(n)))
         def circuit_rho(outcome, U, obs, index):
             post_meas_state_gates(outcome)
             U(index)
@@ -377,13 +464,28 @@ class SEEQSTShadow(Shadow):
         tableau = GHZ_type_state_clifford(selective_block, xy, tableau)
         return tableau
 
-    @classmethod
-    def _inverse_channel(cls, n: int, inv_oc: Array, obs: Observable) -> Array:
+    def _measurement_eigenvalue(self, n: int, obs: PauliObservable) -> Array:
+        """Eigenvalue of the Bernoulli-mask SEEQST measurement channel."""
+        q = jnp.asarray(self.block_probability)
+        n_xy = jnp.sum((obs.params == 1) | (obs.params == 2))
+        n_z = jnp.sum(obs.params == 3)
+
+        # A non-Z Pauli is visible only when the selective block is exactly
+        # its X/Y support and the correct one of the two X/Y settings is used.
+        non_z_eigenvalue = 0.5 * q**n_xy * (1.0 - q)**(n - n_xy)
+
+        # A Z-type Pauli is visible when its overlap with the selective block
+        # has even parity. This also gives eigenvalue one for the identity.
+        z_eigenvalue = 0.5 * (1.0 + (1.0 - 2.0*q)**n_z)
+        return cond(obs.is_ZType,
+                    lambda: z_eigenvalue,
+                    lambda: non_z_eigenvalue)
+
+    def _inverse_channel(self, n: int, inv_oc: Array, obs: Observable) -> Array:
         if not isinstance(obs, PauliObservable):
                     raise NotImplementedError()
-        exp = cond(obs.is_ZType, lambda: 0, lambda: n)   
-        estimate = 2**(exp+1)*inv_oc
-        return estimate
+        return inv_oc / self._measurement_eigenvalue(n, obs)
+    
     # Using b_i as binary representation of 0 <= i < 2**n
     # formula: 2(\sum_{b_i} |b_i><b_i| <b_i|\rho|b_i>) - Id/2**n \
     # + 2**(n+1) ( \rho - (\sum_{b_i} |b_i><b_i| <b_i|\rho|b_i>)).
@@ -392,14 +494,14 @@ class SEEQSTShadow(Shadow):
             raise NotImplementedError()
 
         @qjit(autograph=True)
-        @qp.qnode(qp.device("lightning.qubit", wires=range(self.n)))
+        @qp.qnode(qp.device(self.device, wires=range(self.n)))
         def circuit_rho(outcome, U, obs, index):
             post_meas_state_gates(outcome)
             U(index)
             obs.circuit()
             return qp.expval(obs.op())     
-        exp = cond(obs.is_ZType, lambda: 0, lambda: self.n)   
-        estimate = 2**(exp+1)*circuit_rho(outcome, self.Udag, obs, self.indices[ind]) 
+        estimate = (circuit_rho(outcome, self.Udag, obs, self.indices[ind])
+                    / self._measurement_eigenvalue(self.n, obs))
 
         return estimate
     
@@ -439,7 +541,8 @@ class PauliShadow(Shadow):
 
     @classmethod
     @lru_cache(None)
-    def _inverse_circuit_deprecated(cls, n: int, ind_axis, obs_treedef, U_treedef) -> Callable[..., Any]:
+    def _inverse_circuit_deprecated(cls, n: int, ind_axis, obs_treedef, U_treedef,
+                                    device: str) -> Callable[..., Any]:
         obs_axes = obs_treedef.unflatten(
             [None] * obs_treedef.num_leaves
         )
@@ -448,7 +551,7 @@ class PauliShadow(Shadow):
                     [None] * U_treedef.num_leaves
                 )
         # TODO: Implement this one manually, since it is a product state
-        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+        @qp.qnode(qp.device(device, wires=range(n)))
         def circuit_rho(outcome, U, obs, index):
             post_meas_state_gates(outcome)
             U(index)
@@ -459,7 +562,8 @@ class PauliShadow(Shadow):
         return circuits
 
     @classmethod
-    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef) -> Callable[..., Any]:
+    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef,
+                         device: str) -> Callable[..., Any]:
         paulis = jnp.stack([op(0).matrix() for op in QP_OBS_LIST])
         Us = jnp.stack([qp.matrix(op(0)) for op in [qp.Hadamard, lambda i: qp.adjoint(HadjS(i)), qp.Identity]])
         def single_qubit_expval(qubit_oc, U, obs, index):
@@ -476,6 +580,32 @@ class PauliShadow(Shadow):
     # do nothing for compatibility
     def create_snapshots(self) -> Shadow:
         return self
+
+    def estimate_weak_properties(
+        self,
+        obs: Observable,
+        batch_size: int | None = None,
+    ) -> Array:
+
+        def est_props(ocind):
+            outcomes, indices = ocind
+
+            # For each observable, calculate all per-shot weak values.
+            return jax.vmap(
+                lambda obs_i: self.predict_weak(
+                    outcomes,
+                    indices,
+                    obs_i,
+                )
+            )(obs)
+
+        props = lax.map(
+            est_props,
+            (self.outcomes, self.indices),
+            batch_size=batch_size,
+        )
+
+        return props
 
     def estimate_properties(self, obs: Observable, Ns: Array=jnp.array([0]),
                                 batch_size: int | None=None)->Array:
@@ -508,7 +638,7 @@ class PauliShadow(Shadow):
             raise NotImplementedError()
 
         @qjit(autograph=True)
-        @qp.qnode(qp.device("lightning.qubit", wires=range(self.n)))
+        @qp.qnode(qp.device(self.device, wires=range(self.n)))
         def circuit_rho(outcome, U, obs, index):
             post_meas_state_gates(outcome)
             U(index)
@@ -559,7 +689,8 @@ class CliffordShadow(Shadow):
 
     @classmethod
     @lru_cache(None)
-    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef) -> Callable[..., Any]:
+    def _inverse_circuit(cls, n: int, ind_axis, obs_treedef, U_treedef,
+                         device: str) -> Callable[..., Any]:
         obs_axes = obs_treedef.unflatten(
             [None] * obs_treedef.num_leaves
         )
@@ -568,7 +699,7 @@ class CliffordShadow(Shadow):
                     [None] * U_treedef.num_leaves
                 )
 
-        @qp.qnode(qp.device("lightning.qubit", wires=range(n)))
+        @qp.qnode(qp.device(device, wires=range(n)))
         def circuit_rho(outcome, U, obs, index):
             post_meas_state_gates(outcome)
             U(index)
@@ -612,7 +743,7 @@ class CliffordShadow(Shadow):
 
     def prop_inverse_measurement(self, outcome, ind, obs: Observable) -> Array:
         @qjit(autograph=True)
-        @qp.qnode(qp.device("lightning.qubit", wires=range(self.n)))
+        @qp.qnode(qp.device(self.device, wires=range(self.n)))
         def circuit_rho(outcome, U, obs, index):
             post_meas_state_gates(outcome)
             U(index)

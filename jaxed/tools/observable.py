@@ -63,7 +63,18 @@ class PauliObservable(Observable):
     matrix_list: ClassVar[Array] = jnp.array([op(0).matrix() for op in QP_OBS_LIST])
 
     @classmethod
-    def init(cls, init_params, name_fun=None):
+    @partial(jit, static_argnums=(0,2))
+    def init(cls, params, name_fun=None):
+        n = params.shape[-1]
+        ztype_obs_list = list(reversed([qp.Identity(0)] + \
+                                    [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
+                                    for j in range(n-1,i-1,-1)]) 
+                                    for i in range(n-1,-1,-1)]))
+
+        return cls(params, name_fun=name_fun, ztype_obs_list=ztype_obs_list)
+
+    @classmethod
+    def init_str(cls, init_params, name_fun=None):
         params = jnp.stack([cls.get_param(param) for param in init_params])
         n = params.shape[-1]
         ztype_obs_list = list(reversed([qp.Identity(0)] + \

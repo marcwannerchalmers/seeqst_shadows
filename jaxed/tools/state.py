@@ -69,8 +69,8 @@ class HRState(State):
         key_r, key_i = jax.random.split(key)
 
         z = (
-            jax.random.normal(key_r, (2**n,))
-            + 1j * jax.random.normal(key_i, (2**n,))
+            jax.random.normal(key_r, (2**n,), dtype=jnp.float32)
+            + 1j * jax.random.normal(key_i, (2**n,), dtype=jnp.float32)
         )
 
         return z / jnp.linalg.norm(z)

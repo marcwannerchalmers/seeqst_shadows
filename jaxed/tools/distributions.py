@@ -31,4 +31,13 @@ def uniform(key: Array,
 
     return cond(full_setting, full_fn, rand_fn, key, indices)
 
-# TODO: binomial distribution
+def binomial(key: Array,
+            N: int, n: int,
+            sample_idx_range: List[int],
+            q)->Array:
+    """Sample Bernoulli block masks and one X/Y setting per shot."""
+    key1, key2 = jax.random.split(key)
+    block_inds = jax.random.bernoulli(key1, q, (N,n))
+    xy = jax.random.bernoulli(key2, shape=(N,))
+
+    return jnp.concatenate([block_inds, xy[:,None]], axis=1).astype(int)
