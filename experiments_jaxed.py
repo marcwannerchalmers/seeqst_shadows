@@ -2,7 +2,7 @@ from jaxed.tools.observable import PauliObservable
 from jaxed.tools.state import HRState, HChainGS
 from jaxed.tools.distributions import binomial
 import pennylane as qp
-from jaxed.shadow import SEEQSTShadow, PauliShadow, CliffordShadow
+from jaxed.shadow_patched import SEEQSTShadow, PauliShadow, CliffordShadow
 from typing import List
 import numpy as np
 import matplotlib.pyplot as plt
@@ -450,7 +450,7 @@ def example_experiment_batched(n, k, bs_state=1, bs_obs=1, bs_N=1):
 
     q = k/n
     ns = list(range(n,n+1))
-    Ns = [2**k for k in range(7, 13)]
+    Ns = [2**k for k in range(7, 21)]
     N_obs = 50
     reps = 10
     key = random.PRNGKey(12345)
@@ -466,7 +466,7 @@ def example_experiment_batched(n, k, bs_state=1, bs_obs=1, bs_N=1):
     experiments_list=[]
     for i, shadow_cls in enumerate(shadow_classes):
         key, key2 = random.split(key)
-        shadow_args = {}#{"device": "lightning.gpu"} # {"full_setting": False} if shadow_cls == SEEQSTShadow else {}
+        shadow_args = {"device": "lightning.gpu"} # {"full_setting": False} if shadow_cls == SEEQSTShadow else {}
         exp = ShadowScalingExperiment(shadow_cls, HRState, shadow_args=shadow_args, state_name=state_name,
                                             N_list=Ns, n_list=ns, obs_lists=obs_lists, N_state_reps=reps,
                                             verbose=True, key=key2, path_save=data_paths[i],
@@ -477,7 +477,7 @@ def example_experiment_batched(n, k, bs_state=1, bs_obs=1, bs_N=1):
     # For observables with exactly k X/Y factors, q=k/n maximizes the
     # probability q**k * (1-q)**(n-k) of drawing the useful block mask.
     experiments_list.append(ShadowScalingExperiment(SEEQSTShadow, HRState, 
-                                                    shadow_args={"distribution": partial(binomial, q=q)},
+                                                    shadow_args={"distribution": partial(binomial, q=q), "device": "lightning.gpu"},
                                                     state_name=state_name,
                                                     N_list=Ns, n_list=ns, obs_lists=obs_lists, N_state_reps=reps,
                                                     verbose=True, key=key2, path_save=data_paths[3],
@@ -497,5 +497,5 @@ if __name__ == "__main__":
     test_multiple_hom_paulis(10)
     test_multiple_hom_paulis_klocal(10,2)"""
     # XY_combos(6)
-    example_experiment_batched(15, 5, 1, 50, 4096)
+    example_experiment_batched(20, 19, 1, None, 64)
     # example_experiment(15, 14)

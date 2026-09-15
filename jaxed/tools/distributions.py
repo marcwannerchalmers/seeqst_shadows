@@ -11,7 +11,7 @@ def uniform(key: Array,
 
     def full_fn(key: Array, indices: Array):
         N2 = N//2
-        init_indices = random.randint(key, (N2,n), *sample_idx_range)
+        init_indices = random.randint(key, (N2,n), *sample_idx_range, dtype=jnp.int32)
         indices = indices.at[:N2,:n].set(init_indices)
         indices = indices.at[N2:2*N2,:n].set(init_indices)
         indices = indices.at[:N2,n].set(jnp.zeros((init_indices.shape[0],), dtype=indices.dtype))
@@ -20,14 +20,14 @@ def uniform(key: Array,
 
     def rand_fn(key: Array, indices: Array):
         key1, key2 = random.split(key)
-        init_indices = random.randint(key1, (N,n), *sample_idx_range)
-        setting_indices = random.randint(key2, (N,), 0, 2)
+        init_indices = random.randint(key1, (N,n), *sample_idx_range, dtype=jnp.int32)
+        setting_indices = random.randint(key2, (N,), 0, 2, dtype=jnp.int32)
         indices = indices.at[:,:n].set(init_indices)
         indices = indices.at[:,n].set(setting_indices)
 
         return indices
 
-    indices = jnp.zeros((N,n+1), dtype=int)
+    indices = jnp.zeros((N,n+1), dtype=jnp.int32)
 
     return cond(full_setting, full_fn, rand_fn, key, indices)
 
@@ -36,8 +36,9 @@ def binomial(key: Array,
             sample_idx_range: List[int],
             q)->Array:
     """Sample Bernoulli block masks and one X/Y setting per shot."""
+    q = jnp.asarray(q, dtype=jnp.float32)
     key1, key2 = jax.random.split(key)
     block_inds = jax.random.bernoulli(key1, q, (N,n))
     xy = jax.random.bernoulli(key2, shape=(N,))
 
-    return jnp.concatenate([block_inds, xy[:,None]], axis=1).astype(int)
+    return jnp.concatenate([block_inds, xy[:,None]], axis=1).astype(jnp.int32)

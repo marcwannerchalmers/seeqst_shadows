@@ -97,7 +97,7 @@ def double_pauli(idx: int, pauli: Callable):
 
 def HChain(J: Array) -> Operator:
     paulis = [qp.PauliX, qp.PauliY, qp.PauliZ]
-    return jnp.sum([Ji * jnp.sum([double_pauli(i, P) for P in paulis])
+    return sum([Ji * sum([double_pauli(i, P) for P in paulis])
                 for i, Ji in enumerate(J)])
 
 ###############################
@@ -106,9 +106,9 @@ def HChain(J: Array) -> Operator:
 # Everything is according to https://arxiv.org/pdf/2003.09412
 # Returns h, S from Algorithm 1 in the paper
 def sample_mallow(key: Array, n: int):
-    A = jnp.arange(1, n+1, dtype=int) # to remove elements, make them 0
+    A = jnp.arange(1, n+1, dtype=jnp.int32) # to remove elements, make them 0
     # h = jnp.zeros((n,))
-    m = n
+    m = jnp.array(n, dtype=jnp.int32)
     keys = random.split(key, n)
 
     # maybe have to init hxk on beforehand
@@ -117,11 +117,11 @@ def sample_mallow(key: Array, n: int):
         Ai, m = carry
         n = Ai.shape[0]
         # encode h, k pairs into array
-        elems = jnp.arange(2*n)
-        hs = jnp.tile(jnp.array([[0],[1]]), (1,n))
-        ks = jnp.tile(jnp.arange(1,n+1), (2,1))
-        mask = jnp.where(jnp.tile(jnp.arange(n), (2,1)) < m, 1, 0)
-        prob_vec = 2**(m-1+hs+(m-ks)*(-1)**(1+hs))/(4**m-1)
+        elems = jnp.arange(2*n, dtype=jnp.int32)
+        hs = jnp.tile(jnp.array([[0],[1]], dtype=jnp.int32), (1,n))
+        ks = jnp.tile(jnp.arange(1,n+1, dtype=jnp.int32), (2,1))
+        mask = (jnp.tile(jnp.arange(n, dtype=jnp.int32), (2,1)) < m).astype(jnp.int32)
+        prob_vec = jnp.asarray(2**(m-1+hs+(m-ks)*(-1)**(1+hs))/(4**m-1), dtype=jnp.float32)
         prob_vec = prob_vec * mask
         sample = random.choice(key, elems, p=prob_vec.flatten()) 
         hi = sample // n
@@ -131,7 +131,7 @@ def sample_mallow(key: Array, n: int):
         j = maxima[ki]
         Ai = Ai.at[j-1].set(0)
 
-        return (Ai, m-1), jnp.array([hi, j], dtype=int)
+        return (Ai, m-1), jnp.array([hi, j], dtype=jnp.int32)
 
     _, y = scan(body_fun, init=(A,m), xs=keys)
 
@@ -146,7 +146,7 @@ def cond_Gamma(hi: Array, hj: Array, Si: Array, Sj: Array,
     return cond((hi == 1) & (hj == 1)  \
              | (hi == 1) & (hj == 0) & (Si < Sj) \
              | (hi == 0) & (hj == 1) & (Si > Sj),
-             lambda: Gamma_ij, lambda: 0)
+             lambda: Gamma_ij, lambda: jnp.array(0, dtype=Gamma_ij.dtype))
 
 @jit
 def cond_Delta(hi: Array, hj: Array, Si: Array, Sj: Array, 
@@ -155,12 +155,12 @@ def cond_Delta(hi: Array, hj: Array, Si: Array, Sj: Array,
     return cond((hi == 0) & (hj == 1)  \
              | (hi == 1) & (hj == 1) & (Si > Sj) \
              | (hi == 0) & (hj == 0) & (Si < Sj),
-             lambda: Delta_ij, lambda: 0)
+             lambda: Delta_ij, lambda: jnp.array(0, dtype=Delta_ij.dtype))
 
 # samples the matrices according to Algorithm 2 in the paper
 def create_tableau(key: Array, n: int):
     keys = random.split(key, 5)
-    Delta, Deltad, Gamma, Gammad = [random.randint(key, (n,n), 0, 2)
+    Delta, Deltad, Gamma, Gammad = [random.randint(key, (n,n), 0, 2, dtype=jnp.int32)
                                     for key in keys[:4]]
     h, S = sample_mallow(keys[4], n)
 
@@ -256,7 +256,7 @@ def canonical_form(Gamma: Array, Delta: Array,
         if h[i] == 1:
             qp.H(i)
 
-    F(jnp.zeros((n,), dtype=int), Gamma, Delta)
+    F(jnp.zeros((n,), dtype=jnp.int32), Gamma, Delta)
 
 def canonical_form_rev(Gamma: Array, Delta: Array, 
                    Gammad: Array, Deltad: Array, 
@@ -264,7 +264,7 @@ def canonical_form_rev(Gamma: Array, Delta: Array,
                    swap_indices: Array):
     n = Gamma.shape[0]
 
-    F_rev(jnp.zeros((n,), dtype=int), Gamma, Delta)
+    F_rev(jnp.zeros((n,), dtype=jnp.int32), Gamma, Delta)
 
     for i in reversed(range(n)):
         if h[i] == 1:
@@ -287,10 +287,11 @@ def permutation_to_swaps(S):
         S, swap_i, swap_j = carry
 
         # Find where k currently occurs.
-        pos = jnp.argmax(S == k)
+        k_value = jnp.asarray(k, dtype=S.dtype)
+        pos = jnp.argmax(S == k).astype(S.dtype)
 
         # Swap positions k and pos.
-        swap_i = swap_i.at[k].set(k)
+        swap_i = swap_i.at[k].set(k_value)
         swap_j = swap_j.at[k].set(pos)
 
         val_k = S[k]

@@ -61,7 +61,7 @@ class HRState(State):
 
     @classmethod
     def init(cls, statevecs: Array) -> State:
-        return cls(state_dm=statevecs)
+        return cls(state_dm=jnp.asarray(statevecs, dtype=jnp.complex64))
 
     @staticmethod
     @partial(jit, static_argnums=(1,))
@@ -73,7 +73,7 @@ class HRState(State):
             + 1j * jax.random.normal(key_i, (2**n,), dtype=jnp.float32)
         )
 
-        return z / jnp.linalg.norm(z)
+        return (z / jnp.linalg.norm(z)).astype(jnp.complex64)
 
     @property
     def n(self) -> int:
@@ -88,12 +88,12 @@ class HChainGS(State):
 
     @classmethod
     def init_random(cls, key: Array, n: int, lower: float=-1, upper: float=1):
-        J = random.uniform(key, (n-1,), lower, upper)
+        J = random.uniform(key, (n-1,), dtype=jnp.float32, minval=lower, maxval=upper)
         return cls.init(J)
 
     @classmethod
     def init(cls, J: Array):
-        H = HChain(J).matrix()
+        H = jnp.asarray(HChain(J).matrix(), dtype=jnp.complex64)
         _, evec = jnp.linalg.eigh(H)
         state = evec[:,-1]
         return cls(state_dm=state)

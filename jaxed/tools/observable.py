@@ -60,7 +60,7 @@ class PauliObservable(Observable):
     pauli_dict: ClassVar[Dict] = {"I": 0, "X": 1, "Y": 2, "Z": 3}
     pauli_list: ClassVar[List] = ["I","X","Y","Z"]
     qp_obs_list: ClassVar[List[Callable[...,Any]]] = QP_OBS_LIST
-    matrix_list: ClassVar[Array] = jnp.array([op(0).matrix() for op in QP_OBS_LIST])
+    matrix_list: ClassVar[Array] = jnp.array([op(0).matrix() for op in QP_OBS_LIST], dtype=jnp.complex64)
 
     @classmethod
     @partial(jit, static_argnums=(0,2))
@@ -90,12 +90,12 @@ class PauliObservable(Observable):
         if (k_local <= 0) or (k_local > n): 
             k_local = n
         key1, key2, key3 = random.split(key, 3)
-        sample_indices = jnp.array(sample_indices)
-        sample_params = random.randint(key1, (N,k_local), 0, len(sample_indices))
+        sample_indices = jnp.array(sample_indices, dtype=jnp.int32)
+        sample_params = random.randint(key1, (N,k_local), 0, len(sample_indices), dtype=jnp.int32)
         params = sample_indices[sample_params]
         if k_local < n:
-            padding_indices = jnp.array(padding_indices)
-            sample_params2 = random.randint(key2, (N,n-k_local), 0, len(padding_indices))
+            padding_indices = jnp.array(padding_indices, dtype=jnp.int32)
+            sample_params2 = random.randint(key2, (N,n-k_local), 0, len(padding_indices), dtype=jnp.int32)
             params2 = padding_indices[sample_params2]
             params = jnp.concatenate([params, params2], axis=1)
             params = random.permutation(key3, params, axis=1, independent=True)
@@ -109,13 +109,13 @@ class PauliObservable(Observable):
 
     @classmethod
     def get_param(cls, pauli_str: str):
-        obs_array = jnp.array([cls.pauli_dict[val] for val in pauli_str])
+        obs_array = jnp.array([cls.pauli_dict[val] for val in pauli_str], dtype=jnp.int32)
         return obs_array 
 
     def op(self) -> Operator:
-        params_onehot = jax.nn.one_hot(self.params, 4)
-        n_identity = jnp.dot(params_onehot, jnp.array([1,0,0,0])).sum(axis=-1).astype(int)
-        op_param = jax.nn.one_hot(n_identity, self.n+1)
+        params_onehot = jax.nn.one_hot(self.params, 4, dtype=jnp.float32)
+        n_identity = jnp.dot(params_onehot, jnp.array([1,0,0,0])).sum(axis=-1).astype(jnp.int32)
+        op_param = jax.nn.one_hot(n_identity, self.n+1, dtype=jnp.float32)
         return qp.sum(*[op_param[i]*self.ztype_obs_list[i] for i in range(self.n+1)]) # type: ignore[reportCallIssue]
     
     def circuit(self) -> None:
@@ -134,7 +134,7 @@ class PauliObservable(Observable):
             qp.SWAP(wires=[i, idx])
 
     def qubit_wise_obs(self) -> List[Operator]:
-            params_onehot = jax.nn.one_hot(self.params, 4)
+            params_onehot = jax.nn.one_hot(self.params, 4, dtype=jnp.float32)
 
             return [qp.sum(*[params_onehot[i, j] * self.qp_obs_list[j](i) # type: ignore[reportCallIssue]
                                      for j in range(4)])
@@ -150,7 +150,7 @@ class PauliObservable(Observable):
     # sample indices is list of low, high
     @staticmethod
     def sample(key, n, N, sample_indices: List=[0,4]):
-        return jax.random.randint(key, (N,n), *sample_indices)
+        return jax.random.randint(key, (N,n), *sample_indices, dtype=jnp.int32)
 
     @classmethod 
     def obs_string(cls, pauli_array) -> str:

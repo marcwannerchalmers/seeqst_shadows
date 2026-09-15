@@ -26,8 +26,8 @@ class Tableau(struct.PyTreeNode):
     # Initialize as empty array for lazy init
     @classmethod
     def create(cls, n: int=0, N: int=0, N_rho: int=0):
-        tableau = jnp.eye(2*n, dtype=int)
-        r = jnp.zeros((2*n), dtype=int)
+        tableau = jnp.eye(2*n, dtype=jnp.int32)
+        r = jnp.zeros((2*n), dtype=jnp.int32)
         if N > 0:
             tableau = jnp.stack([tableau for _ in range(N)])
             r = jnp.stack([r for _ in range(N)])
@@ -324,14 +324,14 @@ class Tableau(struct.PyTreeNode):
         a, contained = solve_binary(M, p)
         return cond(contained,
                     lambda: (-1)**stabilizer_phase(M,self.r[self.n:],a, p),
-                    lambda: 0)
+                    lambda: jnp.array(0, dtype=self.r.dtype))
 
     def sample(self, key: Array):
         n = self.n
         keys = jax.random.split(key, n)
         x = self.tableau[:, :n]
         z = self.tableau[:, n:]
-        outcome = jnp.zeros((n,), dtype=int)
+        outcome = jnp.zeros((n,), dtype=jnp.int32)
 
         def body_fun(a, val):
             x, z, r, outcome = val
@@ -363,12 +363,12 @@ class Tableau(struct.PyTreeNode):
                     lambda: (xh, zh, rh),
                 )
 
-            x, z, r = vmap(cond_rowsum)(jnp.arange(2*n), x, z, r)
+            x, z, r = vmap(cond_rowsum)(jnp.arange(2*n, dtype=jnp.int32), x, z, r)
 
             x, z, r = x.at[p-n].set(x[p]), z.at[p-n].set(z[p]), r.at[p-n].set(r[p])
-            x, z = x.at[p].set(0), z.at[p].set(0)
-            z = z.at[p,a].set(1)
-            r = r.at[p].set(jax.random.randint(key, (), 0, 2))
+            x, z = x.at[p].set(jnp.array(0, dtype=x.dtype)), z.at[p].set(jnp.array(0, dtype=z.dtype))
+            z = z.at[p,a].set(jnp.array(1, dtype=z.dtype))
+            r = r.at[p].set(jax.random.randint(key, (), 0, 2, dtype=jnp.int32))
             return r[p], x, z, r
 
         def case2(x, z, r):
@@ -407,7 +407,7 @@ class Tableau(struct.PyTreeNode):
         def g(x1,z1,x2,z2):
             return cond((x1 == 0),
                  lambda: cond(z1==0,
-                              lambda: 0, # x1 == 0 and z1 == 0
+                              lambda: jnp.array(0, dtype=x1.dtype), # x1 == 0 and z1 == 0
                               lambda: x2*(1-2*z2)), # x1 == 0 and z1 == 1
                  lambda: cond(z1==0,
                               lambda: z2*(2*x2-1), # x1 == 1 and z1 == 0
@@ -478,7 +478,7 @@ def canonical_form(tableau: Tableau, Gamma: Array, Delta: Array,
     tableau = F(tableau, pauli_indices, Gammad, Deltad)
     tableau = tableau.Permute(S)
     tableau = tableau.MultiHadamard(h)
-    tableau = F(tableau, jnp.zeros((n,), dtype=int), Gamma, Delta)
+    tableau = F(tableau, jnp.zeros((n,), dtype=jnp.int32), Gamma, Delta)
 
     return tableau
 
@@ -510,13 +510,27 @@ def canonical_form_rev(tableau: Tableau, Gamma: Array, Delta: Array,
                    h: Array, pauli_indices: Array,
                    S: Array) -> Tableau:
     n = Gamma.shape[0]
-    tableau = F_rev(tableau, jnp.zeros((n,), dtype=int), Gamma, Delta)
+    tableau = F_rev(tableau, jnp.zeros((n,), dtype=jnp.int32), Gamma, Delta)
     tableau = tableau.MultiHadamard(h)
     tableau = tableau.Permute(jnp.argsort(S))
 
     tableau = F_rev(tableau, pauli_indices, Gammad, Deltad)
 
     return tableau
+
+def computational_basis_measurement_paulis(ind: Array):
+    n = ind.shape[0]
+    gammadelta = [ind[:,i*n:(i+1)*n] for i in range(4)]
+    h = ind[:,4*n]
+    pauli_indices = ind[:,4*n+1]
+    S = ind[:,4*n+4]
+
+    tableau = Tableau.create(n)
+    tableau = canonical_form_rev(tableau, *gammadelta, h, pauli_indices, S)
+
+    return (tableau.tableau[n:,:n],
+            tableau.tableau[n:,n:],
+            tableau.r[n:])
 
 def GHZ_type_state_clifford_rev(selective_block: Array,
                             xy: Array,
@@ -530,7 +544,7 @@ def GHZ_type_state_clifford_rev(selective_block: Array,
     # theta = cond(reversed, lambda: -jnp.pi/2, lambda: jnp.pi/2)
     theta = -jnp.pi/2
     # applies nothing if indices are all 0
-    tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=int), 
+    tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=jnp.int32),
                                 theta, 
                                 sorted_vals[0]*(xy+1)) 
 
@@ -561,7 +575,7 @@ def GHZ_type_state_clifford(selective_block: Array,
     tableau = fori_loop(0, n-1, body_fun, tableau)
     
     theta = jnp.pi/2
-    tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=int), 
+    tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=jnp.int32),
                                theta, 
                                sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0
     
@@ -577,14 +591,14 @@ def test_sim():
     obs[0] = obs[0].replace(params=jnp.ones_like(obs[0].params))
     obs[1] = obs[1].replace(params=2*jnp.ones_like(obs[0].params))
     obs[2] = obs[2].replace(params=3*jnp.ones_like(obs[0].params))
-    outcomes = jax.random.randint(jax.random.PRNGKey(12345), (N,n), 0,2, dtype=int)
-    condition_vecs = jax.random.randint(jax.random.PRNGKey(0), (N,n), 0,2, dtype=int)
-    cnot_pairs = jax.random.randint(jax.random.PRNGKey(12345),(N,n,2), 0, n)
-    cnot_conditions = jax.random.randint(jax.random.PRNGKey(54321), (N,n), 0,2, dtype=int)
-    S_conditions = jax.random.randint(jax.random.PRNGKey(6789), (N,n), 0,2, dtype=int)
-    cz_pairs = jax.random.randint(jax.random.PRNGKey(53637),(N,n,2), 0, n)
-    cz_conditions = jax.random.randint(jax.random.PRNGKey(10084), (N,n), 0,2, dtype=int)
-    pauli_vecs = jax.random.randint(jax.random.PRNGKey(9382), (N,n), 0,4, dtype=int)
+    outcomes = jax.random.randint(jax.random.PRNGKey(12345), (N,n), 0,2, dtype=jnp.int32)
+    condition_vecs = jax.random.randint(jax.random.PRNGKey(0), (N,n), 0,2, dtype=jnp.int32)
+    cnot_pairs = jax.random.randint(jax.random.PRNGKey(12345),(N,n,2), 0, n, dtype=jnp.int32)
+    cnot_conditions = jax.random.randint(jax.random.PRNGKey(54321), (N,n), 0,2, dtype=jnp.int32)
+    S_conditions = jax.random.randint(jax.random.PRNGKey(6789), (N,n), 0,2, dtype=jnp.int32)
+    cz_pairs = jax.random.randint(jax.random.PRNGKey(53637),(N,n,2), 0, n, dtype=jnp.int32)
+    cz_conditions = jax.random.randint(jax.random.PRNGKey(10084), (N,n), 0,2, dtype=jnp.int32)
+    pauli_vecs = jax.random.randint(jax.random.PRNGKey(9382), (N,n), 0,4, dtype=jnp.int32)
     perm = jax.random.permutation(jax.random.PRNGKey(1434), jnp.stack([jnp.arange(n)]*N), axis=1,independent=True)
 
     print(perm[0:3])
