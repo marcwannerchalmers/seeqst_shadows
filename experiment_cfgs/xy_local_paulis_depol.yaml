@@ -1,0 +1,89 @@
+defaults:
+  - _self_
+
+# Recreates example_experiment_batched(10, 8) from experiments_jaxed.py.
+name: xy_local_paulis_depol
+seed: 12345
+n: 8
+k: 7
+
+# ``values``, ``range`` and ``powers`` are supported for both axes.
+qubits:
+  values: ["${n}"]
+samples:
+  powers:
+    base: 2
+    start: 7
+    stop: 13  # exclusive: 2^7, ..., 2^12
+
+repetitions: 10
+state:
+  class: HRState
+  name: HR_state
+
+observables:
+  init: random  # alternatively: {init: file, path: observables.npy}
+  count: 50
+  sample_indices: [X, Y]
+  k_local: ${k}
+  padding_indices: [I, Z]
+
+batch:
+  states: 1
+  observables: 1
+  samples: 1
+
+experiments:
+  - id: seeqst_uniform
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: pennylane
+    experiment_name: SEEQST unif
+    path_prefix: results/SEEQSTEx1
+    verbose: true
+
+  - id: pauli
+    shadow_class: PauliShadow
+    shadow_args:
+      simulator: pennylane
+    experiment_name: Pauli
+    path_prefix: results/PauliEx
+    verbose: true
+
+  - id: clifford
+    shadow_class: CliffordShadow
+    shadow_args:
+      simulator: pennylane
+    experiment_name: Clifford
+    path_prefix: results/CliffordEx
+    verbose: true
+
+  - id: seeqst_binomial
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: pennylane
+      distribution:
+        name: binomial
+        q: k/n
+      # Optional stochastic Pauli noise would be written as:
+      noise: {name: depolarizing, p: 0.1}
+    experiment_name: SEEQST binom
+    path_prefix: results/SEEQSTEx2_q{k}of{n}
+    verbose: true
+
+plot:
+  enabled: true
+  function: plot_avg_var_zero_segments
+  path: results/scaling_batched_n{n}_Nobs{N_obs}_reps{reps}_N{Nmax}.pdf
+  x: N
+  xlog: true
+  ylog: true
+  metric: rmse
+
+# Keep paths relative to the repository rather than a Hydra output directory.
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

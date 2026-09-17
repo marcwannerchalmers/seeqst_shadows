@@ -1,0 +1,73 @@
+defaults:
+  - _self_
+
+name: experiment_majorana_batched
+seed: 12345
+n: 6
+k: 2
+
+qubits:
+  values: ["${n}"]
+samples:
+  powers: {base: 2, start: 7, stop: 13}
+repetitions: 10
+
+state:
+  class: MajoranaState
+  name: Majorana_state
+
+observables:
+  init: majorana_rdm
+  order: ${k}
+
+batch:
+  states: 1
+  observables: 1
+  samples: 1024
+
+experiments:
+  - id: seeqst_majorana
+    shadow_class: SEEQSTShadow
+    shadow_args: {simulator: pennylane}
+    experiment_name: SEEQST unif
+    path_prefix: results/SEEQSTMajorana_rdm{k}
+    verbose: true
+  - id: pauli_majorana
+    shadow_class: PauliShadow
+    shadow_args: {simulator: pennylane}
+    experiment_name: Pauli
+    path_prefix: results/PauliMajorana_rdm{k}
+    verbose: true
+  - id: clifford_majorana
+    shadow_class: CliffordShadow
+    shadow_args: {simulator: pennylane}
+    experiment_name: Clifford
+    path_prefix: results/CliffordMajorana_rdm{k}
+    verbose: true
+  - id: fermionic_gaussian
+    shadow_class: FermionicGaussianShadow
+    shadow_args: {simulator: statevector}
+    experiment_name: FGU
+    path_prefix: results/FGUMajorana_rdm{k}
+    verbose: true
+  - id: seeqst_majorana_binomial
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: pennylane
+      distribution: {name: binomial, q: mean_xy_support}
+    experiment_name: SEEQST binom
+    path_prefix: results/SEEQSTMajoranaBinom_rdm{k}
+    verbose: true
+
+plot:
+  function: plot_avg_var_zero_segments
+  path: results/majorana_scaling_batched_n{n}_k{k}_Nobs{N_obs}_reps{reps}_N{Nmax}.pdf
+  x: N
+  xlog: true
+  ylog: true
+  metric: rmse
+
+hydra:
+  run: {dir: .}
+  output_subdir: null
+  job: {chdir: false}

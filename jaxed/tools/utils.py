@@ -23,13 +23,15 @@ def build_parallel_entangler_blocks_rev(selective_block: Array, n: int, xy_ind: 
     # Let selective_blocks contain k elements that are 1.
     # The indices in the original array of the first k elements 
     # of the sorted array are 1 and act as active indices
-    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    sorted_indices = jnp.argsort(
+        selective_block, descending=True
+    ).astype(jnp.int32)
     # The first k elements of the sorted array are 1 and act as active elements
     sorted_vals = selective_block[sorted_indices] 
     
     # second predicate ensures that only the 'zero' setting is sampled for the Z-type block
     # RXY = qp.RX if xy_ind == 0 and not sorted_vals[0] == 0 else qp.RY
-    theta = -jnp.pi/2
+    theta = jnp.asarray(-jnp.pi / 2, dtype=jnp.float32)
     for i in range(n-1):
         # Here, this is equivalent to acting on the active qubits
         # Step 1: Initial rotation on first qubit (arbitrary choice)
@@ -50,13 +52,15 @@ def build_parallel_entangler_blocks(selective_block: Array, n: int, xy_ind: Arra
     # Let selective_blocks contain k elements that are 1.
     # The indices in the original array of the first k elements 
     # of the sorted array are 1 and act as active indices
-    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    sorted_indices = jnp.argsort(
+        selective_block, descending=True
+    ).astype(jnp.int32)
     # The first k elements of the sorted array are 1 and act as active elements
     sorted_vals = selective_block[sorted_indices] 
     
     # second predicate ensures that only the 'zero' setting is sampled for the Z-type block
     # RXY = qp.RX if xy_ind == 0 and not sorted_vals[0] == 0 else qp.RY
-    theta = jnp.pi/2
+    theta = jnp.asarray(jnp.pi / 2, dtype=jnp.float32)
     for i in range(n-2,-1,-1):
         if (sorted_vals[i] == 1) & (sorted_vals[i+1] == 1):
             qp.CNOT(jnp.stack([sorted_indices[i], sorted_indices[i+1]]))
@@ -191,13 +195,13 @@ def F(pauli_indices: Array, Gamma: Array, Delta: Array)->None:
     for i in reversed(range(n)):
         for j in reversed(range(i)):
             if Delta[i,j] == 1:
-                qp.CNOT(wires=jnp.array([i,j]))
+                qp.CNOT(wires=jnp.array([i,j], dtype=jnp.int32))
 
     # Gamma is symmetric
     for i in reversed(range(n)):
         for j in reversed(range(i)):
             if Gamma[i,j] == 1:
-                qp.CZ(wires=jnp.array([i,j]))
+                qp.CZ(wires=jnp.array([i,j], dtype=jnp.int32))
 
     for i in range(n):
         if pauli_indices[i] == 1:
@@ -230,13 +234,13 @@ def F_rev(pauli_indices: Array, Gamma: Array, Delta: Array)->None:
     for i in range(n):
         for j in range(i):
             if Gamma[i,j] == 1:
-                qp.CZ(wires=jnp.array([i,j]))
+                qp.CZ(wires=jnp.array([i,j], dtype=jnp.int32))
 
     # Delta is lower triangular
     for i in range(n):
         for j in range(i):
             if Delta[i,j] == 1:
-                qp.CNOT(wires=jnp.array([i,j]))
+                qp.CNOT(wires=jnp.array([i,j], dtype=jnp.int32))
 
 # maps canonical form in (3) in the paper to pennylane gates
 # note that it is prepared in 'reverse' order so that the correpsondence holds

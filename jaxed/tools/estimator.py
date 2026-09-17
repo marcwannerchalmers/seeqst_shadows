@@ -13,7 +13,11 @@ class Estimator:
         N = cond((N <= 0) | (len_x < N),
                  lambda: len_x,
                  lambda: N)
-        mask = jnp.where(jnp.arange(x.shape[-1]) < N, jnp.float32(1), jnp.float32(0))
+        mask = jnp.where(
+            jnp.arange(x.shape[-1], dtype=jnp.int32) < N,
+            jnp.float32(1),
+            jnp.float32(0),
+        )
         return jnp.sum(x*mask, axis=-1, dtype=jnp.float32)/jnp.asarray(N, dtype=jnp.float32)
     
 class MedianOfMeans(Estimator):

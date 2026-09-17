@@ -65,6 +65,7 @@ class PauliObservable(Observable):
     @classmethod
     @partial(jit, static_argnums=(0,2))
     def init(cls, params, name_fun=None):
+        params = jnp.asarray(params, dtype=jnp.int32)
         n = params.shape[-1]
         ztype_obs_list = list(reversed([qp.Identity(0)] + \
                                     [qp.prod(*[qp.PauliZ(j)  # type: ignore[reportCallIssue]
@@ -114,7 +115,10 @@ class PauliObservable(Observable):
 
     def op(self) -> Operator:
         params_onehot = jax.nn.one_hot(self.params, 4, dtype=jnp.float32)
-        n_identity = jnp.dot(params_onehot, jnp.array([1,0,0,0])).sum(axis=-1).astype(jnp.int32)
+        n_identity = jnp.dot(
+            params_onehot,
+            jnp.array([1,0,0,0], dtype=jnp.float32),
+        ).sum(axis=-1).astype(jnp.int32)
         op_param = jax.nn.one_hot(n_identity, self.n+1, dtype=jnp.float32)
         return qp.sum(*[op_param[i]*self.ztype_obs_list[i] for i in range(self.n+1)]) # type: ignore[reportCallIssue]
     
@@ -126,7 +130,7 @@ class PauliObservable(Observable):
                 qp.adjoint(qp.S)(i) # type: ignore[reportCallIssue]
                 qp.Hadamard(i)
 
-        sorted_indices = jnp.argsort(self.params)
+        sorted_indices = jnp.argsort(self.params).astype(jnp.int32)
         sorted_params = self.params[sorted_indices]
         for i, idx in enumerate(sorted_indices):
             if i == idx or sorted_params[i] > 0:
@@ -167,7 +171,9 @@ class PauliObservable(Observable):
 
     @property
     def is_ZType(self) -> Array:
-        return jnp.logical_not(jnp.isin(jnp.array([1,2]), self.params).any())
+        return jnp.logical_not(
+            jnp.isin(jnp.array([1,2], dtype=jnp.int32), self.params).any()
+        )
 
 def test_jit():
 

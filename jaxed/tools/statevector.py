@@ -538,6 +538,7 @@ def _sample_computational_basis(
         cumulative
         < uniforms[..., None],
         axis=-1,
+        dtype=jnp.int32,
     )
 
     basis_samples = jnp.minimum(
@@ -654,7 +655,7 @@ def _sample_seeqst_statevectors(
         -blocks,
         axis=-1,
         stable=True,
-    )
+    ).astype(jnp.int32)
 
     sorted_values = jnp.take_along_axis(
         blocks,

@@ -1,0 +1,76 @@
+defaults:
+  - _self_
+
+# Recreates experiment_random_GHZ(4, 10, 2, 2^12, 3, 1, 5, 1024).
+name: experiment_random_GHZ
+seed: 12345
+nmin: 4
+nmax_exclusive: 20
+n_step: 2
+k: 3
+N: 16384
+
+qubits:
+  range:
+    start: ${nmin}
+    stop: ${nmax_exclusive}
+    step: ${n_step}
+samples:
+  range: 
+    start: 128
+    stop: N+128
+    step: 128
+repetitions: 10
+
+state:
+  class: GHZType
+  name: GHZ_state
+
+# These defaults are overridden by the locality sweep below.
+observables:
+  init: random
+  count: 100
+  sample_indices: [X, Y]
+  padding_indices: [I, Z]
+
+batch:
+  states: 10
+  observables: 10
+  samples: 1024
+
+experiments:
+  - id: seeqst_ghz_locality
+    for_each:
+      variable: offset
+      range: {start: 1, stop: k+1}
+    shadow_class: SEEQSTShadow
+    observables:
+      k_local: n-offset
+    shadow_args:
+      simulator: clifford
+      distribution: {name: binomial, q: (n-offset)/n}
+    k_local: n-offset
+    experiment_name: SEEQST binom q=(n-{offset})/n; Z/I locality {offset}
+    path_prefix: results_new/SEEQSTGHZ_xy_eps{offset}
+    verbose: true
+
+plot:
+  function: plot_sample_complexity
+  epsilon: 0.1
+  path: results_new/GHZ_sample_complexity_eps0.1_nmax{nmax}_Nobs{N_obs}_reps{reps}_N{Nmax}.pdf
+  x: n
+  xlog: false
+  ylog: true
+  metric: rmse
+  aggregation_batch_size: 16
+  progress: true
+  style:
+    font_sizes: {axes: 12, ticks: 10, legend: 9, legend_title: 10}
+    marker_size: 8
+    line_width: 2
+    legend_location: upper left
+
+hydra:
+  run: {dir: .}
+  output_subdir: null
+  job: {chdir: false}

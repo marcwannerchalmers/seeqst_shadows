@@ -1,0 +1,62 @@
+defaults:
+  - _self_
+
+name: plot_n20_saved
+seed: 12345
+n: 20
+k: 19
+
+qubits:
+  values: ["${n}"]
+samples:
+  powers: {base: 2, start: 7, stop: 21}
+repetitions: 10
+
+state:
+  class: HRState
+  name: HR_state
+
+observables:
+  init: random
+  count: 50
+  sample_indices: [X, Y]
+  k_local: ${k}
+  padding_indices: [I, Z]
+
+batch:
+  states: 1
+  observables: 50
+  samples: 64
+
+experiments:
+  - id: clifford
+    shadow_class: CliffordShadow
+    experiment_name: Clifford
+
+  - id: seeqst_uniform
+    shadow_class: SEEQSTShadow
+    experiment_name: SEEQST unif
+
+  - id: seeqst_binomial
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      distribution: {name: binomial, q: k/n}
+    experiment_name: SEEQST binom
+
+plot:
+  files:
+    - Clifford: results/CliffordEx_nmax20_N1048576_reps10_kNone_bsState1_bsObs50_bsN64.npy
+    - SEEQST unif: results/SEEQSTEx1_nmax20_N1048576_reps10_kNone_bsState1_bsObs50_bsN64.npy
+    - SEEQST binom: results/SEEQSTEx2_q19of20_nmax20_N1048576_reps10_kNone_bsState1_bsObs50_bsN64.npy
+  function: plot_avg_var_zero_segments
+  path: results/scaling_loaded_n20_Nobs50_reps10_N1048576_Nmin8192.pdf
+  x: N
+  N_min: 2**13
+  xlog: true
+  ylog: true
+  metric: rmse
+
+hydra:
+  run: {dir: .}
+  output_subdir: null
+  job: {chdir: false}

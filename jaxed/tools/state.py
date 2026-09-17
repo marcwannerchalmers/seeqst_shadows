@@ -35,8 +35,11 @@ class State(ABC, struct.PyTreeNode):
         pass
 
     @abstractmethod
-    def __call__(self) -> None:
+    def prepare_state(self) -> None:
         pass
+
+    def __call__(self) -> None:
+        self.prepare_state()
 
     @property
     @abstractmethod
@@ -79,7 +82,7 @@ class HRState(State):
     def n(self) -> int:
         return int(np.log2(self.state_dm.shape[-1]))
 
-    def __call__(self):
+    def prepare_state(self):
         qp.StatePrep(self.state_dm, wires=range(self.n))
 
 
@@ -102,7 +105,7 @@ class HChainGS(State):
     def n(self) -> int:
         return int(np.log2(self.state_dm.shape[-1]))
 
-    def __call__(self):
+    def prepare_state(self):
         qp.StatePrep(self.state_dm, wires=range(self.n))
 
 class GHZType(State):
@@ -111,18 +114,23 @@ class GHZType(State):
 
     @classmethod
     def init_random(cls, key: Array, N_state: int, n: int) -> State:
-        blocks = random.randint(key, (N_state, n+1), 0, 2)
+        blocks = random.randint(
+            key, (N_state, n+1), 0, 2, dtype=jnp.int32
+        )
         return vmap(cls.init)(blocks[:,:n], blocks[:,n])
 
     @classmethod
     def init(cls, selective_block: Array, xy: Array) -> State:
-        return cls(selective_block=selective_block, xy=xy)
+        return cls(
+            selective_block=jnp.asarray(selective_block, dtype=jnp.int32),
+            xy=jnp.asarray(xy, dtype=jnp.int32),
+        )
 
     @property
     def n(self) -> int:
         return int(self.selective_block.shape[-1])
 
-    def __call__(self) -> None:
+    def prepare_state(self) -> None:
         build_parallel_entangler_blocks(self.selective_block,
                                         self.n, 
                                         self.xy)
@@ -131,6 +139,28 @@ class GHZType(State):
         return GHZ_type_state_clifford(self.selective_block, 
                                        self.xy,
                                        tableau)
+
+# Adds returns State class decorated with noise_fn(n) in the __call__ method
+def noisy_version(state_cls: type[State], noise_fn):
+    class NoisyState(state_cls):
+        key: Array = struct.field(default=PRNGKey(0))
+
+        def __call__(self) -> None:
+            super().__call__()
+            noise_fn(key=self.key, n=self.n)
+
+        @classmethod
+        def init_random(cls, key: Array, N_state: int, n: int, *args, **argv) -> State:
+            key, key2 = random.split(key)
+            instance = super().init_random(key, N_state, n, *args, **argv)
+            return instance.replace(key=key2)
+
+        @classmethod
+        def init(cls, key, *args, **argv) -> State:
+            instance = super().init(*args, **argv)
+            return instance.replace(key=key)
+
+    return NoisyState
 
 def test():
     n = 5

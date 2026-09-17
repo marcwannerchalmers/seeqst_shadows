@@ -81,7 +81,7 @@ class Tableau(struct.PyTreeNode):
                                              bit_encoding)
 
         tableau = jnp.concatenate([x,z], axis=1)
-        r = (self.r + jnp.sum(r_vec, axis=1)) % 2
+        r = (self.r + jnp.sum(r_vec, axis=1, dtype=jnp.int32)) % 2
         return self.replace(tableau=tableau, r=r)
 
     def MultiSdag(self, bit_encoding: Array):
@@ -92,7 +92,7 @@ class Tableau(struct.PyTreeNode):
                                                 bit_encoding)
 
         tableau = jnp.concatenate([x,z], axis=1)
-        r = (self.r + jnp.sum(r_vec, axis=1)) % 2
+        r = (self.r + jnp.sum(r_vec, axis=1, dtype=jnp.int32)) % 2
         return self.replace(tableau=tableau, r=r)
 
     def MultiHadamard(self, bit_encoding: Array):
@@ -103,7 +103,7 @@ class Tableau(struct.PyTreeNode):
                                                 bit_encoding)
         
         tableau = jnp.concatenate([x,z], axis=1)
-        r = (self.r + jnp.sum(r_vec, axis=1)) % 2
+        r = (self.r + jnp.sum(r_vec, axis=1, dtype=jnp.int32)) % 2
         return self.replace(tableau=tableau, r=r)
 
     def Permute(self, permutation: Array):
@@ -123,7 +123,7 @@ class Tableau(struct.PyTreeNode):
                                         self.tableau[:,self.n:])
 
         tableau = jnp.concatenate([x,z], axis=1)
-        r = (self.r + jnp.sum(r_vec, axis=1)) % 2
+        r = (self.r + jnp.sum(r_vec, axis=1, dtype=jnp.int32)) % 2
         return self.replace(tableau=tableau, r=r)
 
     def PauliRot(self, i: Array, theta: Array, pauli: Array):
@@ -144,7 +144,7 @@ class Tableau(struct.PyTreeNode):
                                 self.tableau[:,:self.n],
                                 self.tableau[:,self.n:])
 
-        r = (self.r + jnp.sum(r_vec, axis=1)) % 2
+        r = (self.r + jnp.sum(r_vec, axis=1, dtype=jnp.int32)) % 2
         return self.replace(r=r)
 
     def _Hadamard(self, i: int):
@@ -353,7 +353,7 @@ class Tableau(struct.PyTreeNode):
         condition = (x[n:,a] == 1).any()
         def case1(x, z, r):
             # `argmax` returns the first stabilizer row with x[p, a] == 1.
-            p = jnp.argmax(x[n:,a]) + n
+            p = jnp.argmax(x[n:,a]).astype(jnp.int32) + n
             xp, zp, rp = x[p], z[p], r[p]
 
             def cond_rowsum(i, xh, zh, rh):
@@ -415,7 +415,10 @@ class Tableau(struct.PyTreeNode):
                  )
 
         g_vals = vmap(g)(xi,zi,xh,zh)
-        phase = (2*rh + 2*ri + jnp.sum(g_vals, axis=-1)) % 4
+        phase = (
+            2*rh + 2*ri
+            + jnp.sum(g_vals, axis=-1, dtype=jnp.int32)
+        ) % 4
         rh = phase // 2
         return (xh + xi) % 2, (zh + zi) % 2, rh
 
@@ -512,7 +515,7 @@ def canonical_form_rev(tableau: Tableau, Gamma: Array, Delta: Array,
     n = Gamma.shape[0]
     tableau = F_rev(tableau, jnp.zeros((n,), dtype=jnp.int32), Gamma, Delta)
     tableau = tableau.MultiHadamard(h)
-    tableau = tableau.Permute(jnp.argsort(S))
+    tableau = tableau.Permute(jnp.argsort(S).astype(jnp.int32))
 
     tableau = F_rev(tableau, pauli_indices, Gammad, Deltad)
 
@@ -538,11 +541,13 @@ def GHZ_type_state_clifford_rev(selective_block: Array,
     
     n = tableau.n
     # Read utils.parallel_entangler_blocks for more explanation
-    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    sorted_indices = jnp.argsort(
+        selective_block, descending=True
+    ).astype(jnp.int32)
     sorted_vals = selective_block[sorted_indices] 
 
     # theta = cond(reversed, lambda: -jnp.pi/2, lambda: jnp.pi/2)
-    theta = -jnp.pi/2
+    theta = jnp.asarray(-jnp.pi / 2, dtype=jnp.float32)
     # applies nothing if indices are all 0
     tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=jnp.int32),
                                 theta, 
@@ -563,7 +568,9 @@ def GHZ_type_state_clifford(selective_block: Array,
     
     n = tableau.n
     # Read utils.parallel_entangler_blocks for more explanation
-    sorted_indices = jnp.argsort(selective_block, descending=True) 
+    sorted_indices = jnp.argsort(
+        selective_block, descending=True
+    ).astype(jnp.int32)
     sorted_vals = selective_block[sorted_indices] 
     
     def body_fun(i, tableau: Tableau):
@@ -574,7 +581,7 @@ def GHZ_type_state_clifford(selective_block: Array,
     
     tableau = fori_loop(0, n-1, body_fun, tableau)
     
-    theta = jnp.pi/2
+    theta = jnp.asarray(jnp.pi / 2, dtype=jnp.float32)
     tableau = tableau.PauliRot(jnp.array(sorted_indices[0], dtype=jnp.int32),
                                theta, 
                                sorted_vals[0]*(xy+1)) # applies nothing if indices are all 0

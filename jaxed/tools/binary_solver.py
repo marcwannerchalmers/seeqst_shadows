@@ -18,11 +18,11 @@ def solve_binary(M: jax.Array, p: jax.Array):
         # Find a pivot row >= k.
         A, w = Aw
         pivot_col = A[:,k]*w
-        pivot = jnp.argmax(pivot_col)
+        pivot = jnp.argmax(pivot_col).astype(jnp.int32)
         # Take care of the case that all subsequent rows are already triu
         pivot = cond(pivot_col[pivot] == 1,
                      lambda: pivot,
-                     lambda: k)
+                     lambda: k.astype(jnp.int32))
 
         # Swap row k and pivot.
         row_k = A[k]
@@ -50,7 +50,8 @@ def solve_binary(M: jax.Array, p: jax.Array):
         rhs = A[i, -1]
 
         contribution = jnp.sum(
-            A[i,:-1] * a
+            A[i,:-1] * a,
+            dtype=jnp.int32,
         ) % 2
 
         a = a.at[i].set(
@@ -75,7 +76,7 @@ def stabilizer_phase(M, r, a, p):
     z = M[n:]
 
     # Signs carried by the generators themselves
-    phase = jnp.sum(a * r)
+    phase = jnp.sum(a * r, dtype=jnp.int32)
 
     # z_i dot x_j
     pair_int = z.T @ x
@@ -87,7 +88,8 @@ def stabilizer_phase(M, r, a, p):
         jnp.triu(
             jnp.outer(a, a) * pair_mod2,
             k=1,
-        )
+        ),
+        dtype=jnp.int32,
     )
 
     # IMPORTANT: do NOT use pair_mod2 here.
@@ -95,7 +97,8 @@ def stabilizer_phase(M, r, a, p):
     generator_y = jnp.sum(
         jnp.diag(
             jnp.outer(a, a) * pair_int
-        )
+        ),
+        dtype=jnp.int32,
     )
 
     target_y = jnp.dot(p[:n], p[n:])
