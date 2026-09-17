@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import math
 import operator
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -15,11 +16,12 @@ import numpy as np
 from hydra import main as hydra_main
 from jax import random
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from scipy.optimize import minimize_scalar
 
 from experiments_jaxed import GHZ_Klocal
 from jaxed.experiments import Experiments, ShadowScalingExperiment
 from jaxed.shadow import CliffordShadow, PauliShadow, SEEQSTShadow
-from jaxed.tools.distributions import binomial, uniform
+from jaxed.tools.distributions import binomial, fixed_weight, uniform
 from jaxed.tools.majorana import (
     FermionicGaussianShadow,
     MajoranaState,
@@ -251,11 +253,20 @@ def _distribution(
         name = spec.get("name", "uniform")
     if name == "uniform":
         return uniform
+    if name == "fixed_weight":
+        if spec.get("weights", "rdm_optim") != "rdm_optim":
+            raise ValueError("fixed_weight currently supports weights: rdm_optim")
+        return partial(
+            fixed_weight,
+            probabilities=_rdm_fixed_weight_probabilities(n, observables),
+        )
     if name != "binomial":
         raise ValueError(f"Unknown distribution {name!r}")
 
     q_spec = spec.get("q")
-    if q_spec == "mean_xy_support":
+    if q_spec == "rdm_optim":
+        q = _rdm_optimized_q(n, observables)
+    elif q_spec == "mean_xy_support":
         xy_support = (observables.params == 1) | (observables.params == 2)
         q = float(jnp.mean(jnp.sum(xy_support, axis=1)) / n)
         q = min(max(q, 1.0 / (2 * n)), 1.0 - 1.0 / (2 * n))
@@ -264,6 +275,75 @@ def _distribution(
     if not 0.0 < q < 1.0:
         raise ValueError(f"Binomial q must lie strictly between zero and one, got {q}")
     return partial(binomial, q=q)
+
+
+def _rdm_optimized_q(n: int, observables: PauliObservable) -> float:
+    """Minimize the exact average inverse-channel eigenvalue for the targets."""
+    params = np.asarray(observables.params)
+    n_xy = np.count_nonzero((params == 1) | (params == 2), axis=1)
+    n_z = np.count_nonzero(params == 3, axis=1)
+    non_z = n_xy > 0
+
+    def risk(q: float) -> float:
+        non_z_eigenvalues = 0.5 * q**n_xy[non_z] * (1.0 - q)**(
+            n - n_xy[non_z]
+        )
+        z_eigenvalues = 0.5 * (
+            1.0 + (1.0 - 2.0 * q) ** n_z[~non_z]
+        )
+        return float(
+            np.sum(1.0 / non_z_eigenvalues) + np.sum(1.0 / z_eigenvalues)
+        )
+
+    optimum = minimize_scalar(
+        risk,
+        bounds=(1.0e-6, 1.0 - 1.0e-6),
+        method="bounded",
+        options={"xatol": 1.0e-12},
+    )
+    if not optimum.success:
+        raise ValueError(f"Could not optimize the RDM binomial q: {optimum.message}")
+    return float(optimum.x)
+
+
+def _rdm_fixed_weight_probabilities(
+    n: int, observables: PauliObservable
+) -> tuple[float, ...]:
+    """Closed-form average-optimal fixed-weight mixture for the non-Z sector."""
+    params = np.asarray(observables.params)
+    supports = np.count_nonzero((params == 1) | (params == 2), axis=1)
+    probabilities = np.zeros(n + 1, dtype=np.float64)
+    for support in np.unique(supports[supports > 0]):
+        count = np.count_nonzero(supports == support)
+        probabilities[support] = np.sqrt(count * math.comb(n, int(support)))
+    if probabilities.sum() == 0:
+        raise ValueError("fixed_weight requires at least one non-Z observable")
+    probabilities /= probabilities.sum()
+    return tuple(float(value) for value in probabilities)
+
+
+def _fixed_weight_eigenvalues(
+    n: int, probabilities: tuple[float, ...]
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """SEEQST channel eigenvalues for an exchangeable fixed-weight mixture."""
+    non_z = np.zeros(n + 1, dtype=np.float64)
+    z_type = np.zeros(n + 1, dtype=np.float64)
+    for support in range(1, n + 1):
+        non_z[support] = (
+            probabilities[support] / (2.0 * math.comb(n, support))
+        )
+    for z_weight in range(n + 1):
+        visibility = 0.0
+        for weight, probability in enumerate(probabilities):
+            even_probability = sum(
+                math.comb(z_weight, overlap)
+                * math.comb(n - z_weight, weight - overlap)
+                for overlap in range(0, z_weight + 1, 2)
+                if 0 <= weight - overlap <= n - z_weight
+            ) / math.comb(n, weight)
+            visibility += probability * even_probability
+        z_type[z_weight] = visibility
+    return tuple(non_z), tuple(z_type)
 
 
 def _shadow_arguments(
@@ -280,6 +360,14 @@ def _shadow_arguments(
         for name, value in raw.items():
             if name == "distribution":
                 parsed[name] = _distribution(value, n, obs, local_context)
+                if (
+                    isinstance(parsed[name], partial)
+                    and parsed[name].func is fixed_weight
+                ):
+                    probabilities = parsed[name].keywords["probabilities"]
+                    parsed["fixed_weight_eigenvalues"] = (
+                        _fixed_weight_eigenvalues(n, probabilities)
+                    )
             elif name in {"noise", "noise_fun"}:
                 noise_spec = _as_plain(value)
                 if noise_spec is None or (
@@ -408,6 +496,12 @@ def parse_experiment_config(
             observables,
             local_context,
         )
+        first_distribution = shadow_args(ns[0]).get("distribution")
+        if (
+            isinstance(first_distribution, partial)
+            and first_distribution.func is binomial
+        ):
+            local_context["q"] = first_distribution.keywords["q"]
         k_local_value = experiment_spec.get(
             "k_local",
             observable_spec.get("order", observable_spec.get("k_local")),

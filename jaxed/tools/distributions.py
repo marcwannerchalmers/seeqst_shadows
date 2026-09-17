@@ -42,3 +42,21 @@ def binomial(key: Array,
     xy = jax.random.bernoulli(key2, shape=(N,))
 
     return jnp.concatenate([block_inds, xy[:,None]], axis=1).astype(jnp.int32)
+
+
+def fixed_weight(key: Array,
+                 N: int, n: int,
+                 sample_idx_range: List[int],
+                 probabilities)->Array:
+    """Sample a block weight, then a uniformly random block of that weight."""
+    probabilities = jnp.asarray(probabilities, dtype=jnp.float32)
+    key1, key2, key3 = jax.random.split(key, 3)
+    weights = jax.random.categorical(
+        key1, jnp.log(probabilities), shape=(N,)
+    ).astype(jnp.int32)
+    priorities = jax.random.uniform(key2, (N, n), dtype=jnp.float32)
+    ranks = jnp.argsort(jnp.argsort(priorities, axis=1), axis=1)
+    block_inds = ranks < weights[:, None]
+    xy = jax.random.bernoulli(key3, shape=(N,))
+
+    return jnp.concatenate([block_inds, xy[:, None]], axis=1).astype(jnp.int32)

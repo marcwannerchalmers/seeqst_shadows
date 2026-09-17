@@ -444,6 +444,9 @@ class SEEQSTShadow(Shadow):
     # measurement-channel eigenvalues used during reconstruction.
     block_probability: float = struct.field(pytree_node=False,
                                             default=0.5)
+    fixed_weight_eigenvalues: tuple | None = struct.field(
+        pytree_node=False, default=None
+    )
 
     # First n bits of self.indices are for the block encoding, the last one is for the setting
     # redefine this to avoid an extra pass of n
@@ -455,6 +458,7 @@ class SEEQSTShadow(Shadow):
                device: str="lightning.qubit",
                simulator: str="pennylane",
                block_probability: float | None=None,
+               fixed_weight_eigenvalues: tuple | None=None,
                noise_fun: Callable | None=None,
                *args, **kwargs):
         if block_probability is None:
@@ -465,6 +469,8 @@ class SEEQSTShadow(Shadow):
                   and distribution.keywords is not None
                   and "q" in distribution.keywords):
                 block_probability = float(distribution.keywords["q"])
+            elif fixed_weight_eigenvalues is not None:
+                block_probability = 0.5
             else:
                 raise ValueError(
                     "block_probability must be provided for a custom SEEQST "
@@ -486,7 +492,10 @@ class SEEQSTShadow(Shadow):
             noise_fun=noise_fun,
             distribution=distribution,
         )
-        return shadow.replace(block_probability=block_probability)
+        return shadow.replace(
+            block_probability=block_probability,
+            fixed_weight_eigenvalues=fixed_weight_eigenvalues,
+        )
 
     # Distribution has to be a function matching the pattern below and return SEEQST binary indices
     # of shape (N, n+1)
@@ -554,12 +563,21 @@ class SEEQSTShadow(Shadow):
         return tableau
 
     def _measurement_eigenvalue(self, n: int, obs: PauliObservable) -> Array:
-        """Eigenvalue of the Bernoulli-mask SEEQST measurement channel."""
-        q = jnp.asarray(self.block_probability, dtype=jnp.float32)
+        """Eigenvalue of the configured SEEQST measurement channel."""
         n_xy = jnp.sum(
             (obs.params == 1) | (obs.params == 2), dtype=jnp.int32
         )
         n_z = jnp.sum(obs.params == 3, dtype=jnp.int32)
+
+        if self.fixed_weight_eigenvalues is not None:
+            non_z, z_type = self.fixed_weight_eigenvalues
+            return cond(
+                obs.is_ZType,
+                lambda: jnp.asarray(z_type, dtype=jnp.float32)[n_z],
+                lambda: jnp.asarray(non_z, dtype=jnp.float32)[n_xy],
+            )
+
+        q = jnp.asarray(self.block_probability, dtype=jnp.float32)
 
         # A non-Z Pauli is visible only when the selective block is exactly
         # its X/Y support and the correct one of the two X/Y settings is used.

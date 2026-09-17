@@ -1,0 +1,89 @@
+defaults:
+  - _self_
+
+name: arrhenius_majorana_batched
+seed: 12345
+n: 6
+k: 2
+
+qubits:
+  values: ["${n}"]
+samples:
+  powers: {base: 2, start: 7, stop: 13}
+repetitions: 5
+
+state:
+  class: MajoranaState
+  name: Majorana_state
+
+observables:
+  init: majorana_rdm
+  order: ${k}
+
+batch:
+  states: 1
+  observables: 1
+  samples: 1024
+
+experiments:
+  - id: seeqst_majorana
+    shadow_class: SEEQSTShadow
+    shadow_args: {simulator: pennylane}
+    experiment_name: SEEQST unif
+    path_prefix: results_arrhenius/SEEQSTMajorana_rdm{k}
+    verbose: true
+  - id: pauli_majorana
+    shadow_class: PauliShadow
+    shadow_args: {simulator: pennylane}
+    experiment_name: Pauli
+    path_prefix: results_arrhenius/PauliMajorana_rdm{k}
+    verbose: true
+  - id: clifford_majorana
+    shadow_class: CliffordShadow
+    shadow_args: {simulator: pennylane}
+    experiment_name: Clifford
+    path_prefix: results_arrhenius/CliffordMajorana_rdm{k}
+    verbose: true
+  - id: fermionic_gaussian
+    shadow_class: FermionicGaussianShadow
+    shadow_args: {simulator: statevector}
+    experiment_name: FGU
+    path_prefix: results_arrhenius/FGUMajorana_rdm{k}
+    verbose: true
+  - id: seeqst_majorana_binomial
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: pennylane
+      distribution: {name: binomial, q: mean_xy_support}
+    experiment_name: SEEQST binom
+    path_prefix: results_arrhenius/SEEQSTMajoranaBinom_rdm{k}
+    verbose: true
+  - id: seeqst_majorana_binomial_optimized
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: pennylane
+      distribution: {name: binomial, q: rdm_optim}
+    experiment_name: "SEEQST binom optim q={q:.2f}"
+    path_prefix: results_arrhenius/SEEQSTMajoranaBinomOptim_rdm{k}
+    verbose: true
+  - id: seeqst_majorana_fixed_weight
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: pennylane
+      distribution: {name: fixed_weight, weights: rdm_optim}
+    experiment_name: SEEQST fixed-weight optim
+    path_prefix: results_arrhenius/SEEQSTMajoranaFixedWeight_rdm{k}
+    verbose: true
+
+plot:
+  function: plot_avg_var_zero_segments
+  path: results_arrhenius/majorana_scaling_batched_n{n}_k{k}_Nobs{N_obs}_reps{reps}_N{Nmax}.pdf
+  x: N
+  xlog: true
+  ylog: true
+  metric: rmse
+
+hydra:
+  run: {dir: .}
+  output_subdir: null
+  job: {chdir: false}

@@ -30,8 +30,8 @@ observables:
 
 batch:
   states: 1
-  observables: 1
-  samples: 1
+  observables: 5
+  samples: 1024
 
 experiments:
   - id: seeqst_uniform
