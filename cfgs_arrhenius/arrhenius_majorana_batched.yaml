@@ -3,14 +3,14 @@ defaults:
 
 name: arrhenius_majorana_batched
 seed: 12345
-n: 6
+n: 12
 k: 2
 
 qubits:
   values: ["${n}"]
 samples:
-  powers: {base: 2, start: 7, stop: 13}
-repetitions: 5
+  powers: {base: 2, start: 7, stop: 21}
+repetitions: 10
 
 state:
   class: MajoranaState
@@ -23,7 +23,7 @@ observables:
 batch:
   states: 1
   observables: 1
-  samples: 1024
+  samples: 4096
 
 experiments:
   - id: seeqst_majorana
