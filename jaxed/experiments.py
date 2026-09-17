@@ -405,6 +405,7 @@ class ShadowScalingExperiment:
         save_state = False
         experiments_loaded = False
         if self.path_save is not None:
+            print(self.path_save)
             if os.path.isfile(self.path_save+".npy"):
                 self.load_results(self.path_save+".npy")
                 experiments_loaded = True
@@ -538,6 +539,7 @@ class ShadowScalingExperiment:
                            dtype=jnp.float32)
             params = pred, gt
 
+            @jit
             def loop_states(i, params):
                 pred_vec, gt_vec = params
 
@@ -568,6 +570,7 @@ class ShadowScalingExperiment:
                     dtype=jnp.float32,
                 )
 
+                @jit
                 def loop_gt_obs(j, gt_state_batch):
                     obs = obs_cls.init(
                         dynamic_slice_in_dim(
@@ -602,6 +605,7 @@ class ShadowScalingExperiment:
                     dtype=jnp.float32,
                 )
 
+                @jit
                 def loop_N(k, weak_pred_vec):
 
                     # ONCE per sample batch
