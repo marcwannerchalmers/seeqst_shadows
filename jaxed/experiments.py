@@ -39,7 +39,7 @@ jax.config.update(
     "jax_persistent_cache_min_compile_time_secs",
     0,
 )
-
+# TODO: Identify bug that it considers runs saved that are different but with same .cfg name
 # TODO: Save the outcomes and load them if the path exists, printing what it ended up doing.
 class Experiments:
     """Run, collect and plot a group of shadow-scaling experiments."""

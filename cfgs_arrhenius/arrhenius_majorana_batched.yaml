@@ -35,7 +35,7 @@ experiments:
   - id: seeqst_majorana
     shadow_class: SEEQSTShadow
     shadow_args: {simulator: statevector}
-    experiment_name: SEEQST unif
+    experiment_name: SEEQST uniform
     path_prefix: results_arrhenius/SEEQSTMajorana_rdm{k}
     verbose: true
   - id: pauli_majorana

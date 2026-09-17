@@ -4,10 +4,10 @@ defaults:
 # Recreates experiment_random_GHZ(4, 10, 2, 2^12, 3, 1, 5, 1024).
 name: arrhenius_random_GHZ
 seed: 12345
-nmin: 50
-nmax_exclusive: 52
-n_step: 2
-k: 2
+nmin: 5
+nmax_exclusive: 55
+n_step: 5
+k: 3
 N: 2097152
 
 qubits:
