@@ -4,8 +4,7 @@ import jax
 from jax import numpy as jnp
 from jax import random, vmap, jit, Array
 from jax import tree
-from jax.lax import fori_loop, cond, dynamic_slice_in_dim, dynamic_update_slice_in_dim, \
-                    dynamic_update_slice, dynamic_slice
+from jax.lax import fori_loop, dynamic_slice_in_dim, dynamic_update_slice_in_dim
 import os
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -494,6 +493,8 @@ class ShadowScalingExperiment:
         assert self.N % self.bs_N == 0
         assert self.N_state_reps % self.state_batch_size == 0
         assert N_obs % self.bs_obs == 0
+        for n in self.ns:
+            self.estimator(n, self.N).validate_Ns(self.Ns)
 
         N_batches = self.N//self.bs_N
         N_state_batches = self.N_state_reps//self.state_batch_size
@@ -600,13 +601,13 @@ class ShadowScalingExperiment:
                     gt_state_batch,
                 )
 
-                weak_pred_vec = jnp.zeros(
-                    (self.state_batch_size, N_obs, self.N),
-                    dtype=jnp.float32,
+                estimator = self.estimator(n, self.N)
+                estimator_state = estimator.init_state(
+                    (self.state_batch_size, N_obs), self.Ns
                 )
 
                 @jit
-                def loop_N(k, weak_pred_vec):
+                def loop_N(k, estimator_state):
 
                     # ONCE per sample batch
                     shadow = init_shadow_jit(
@@ -626,7 +627,12 @@ class ShadowScalingExperiment:
 
                     shadow = shadow.create_snapshots()
 
-                    def loop_obs(j, weak_pred_vec):
+                    weak_batch = jnp.zeros(
+                        (self.state_batch_size, N_obs, self.bs_N),
+                        dtype=jnp.float32,
+                    )
+
+                    def loop_obs(j, weak_batch):
                         obs = obs_cls.init(
                             dynamic_slice_in_dim(
                                 observable.params,
@@ -642,26 +648,23 @@ class ShadowScalingExperiment:
                             dtype=jnp.float32,
                         )
 
-                        weak_pred_vec = dynamic_update_slice(
-                            weak_pred_vec,
+                        weak_batch = dynamic_update_slice_in_dim(
+                            weak_batch,
                             props,
-                            (
-                                0,
-                                j * self.bs_obs,
-                                k * self.bs_N,
-                            ),
+                            j * self.bs_obs,
+                            axis=1,
                         )
 
-                        return weak_pred_vec
+                        return weak_batch
 
-                    weak_pred_vec = fori_loop(
+                    weak_batch = fori_loop(
                         0,
                         N_obs_batches,
                         loop_obs,
-                        weak_pred_vec,
+                        weak_batch,
                     )
 
-                    return weak_pred_vec
+                    return estimator.update(estimator_state, weak_batch, self.Ns)
 
                 if self.verbose:
                     loop_N = loop_tqdm(
@@ -670,27 +673,14 @@ class ShadowScalingExperiment:
                         desc="Sample batches",
                     )(loop_N)
 
-                weak_pred_vec = fori_loop(
+                estimator_state = fori_loop(
                     0,
                     N_batches,
                     loop_N,
-                    weak_pred_vec,
+                    estimator_state,
                 )
 
-                estimator = self.estimator(n, self.N)
-                pred_fun = lambda estimator, props, N: estimator(
-                    props,
-                    N,
-                )     
-                preds_state_batch = vmap(
-                    pred_fun,
-                    in_axes=(None, None, 0),
-                    out_axes=2,
-                )(
-                    estimator,
-                    weak_pred_vec,
-                    self.Ns,
-                )
+                preds_state_batch = estimator.finalize(estimator_state, self.Ns)
                 pred_vec = dynamic_update_slice_in_dim(
                     pred_vec,
                     preds_state_batch,

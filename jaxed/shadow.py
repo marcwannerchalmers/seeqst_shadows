@@ -166,8 +166,12 @@ class Shadow(ABC, struct.PyTreeNode):
             if outcomes is not None:
                 return self.replace(outcomes=outcomes)
 
-        create_samples = lambda shadow, indices, state: shadow._sample(indices, state)
-        outcomes = jax.vmap(create_samples, in_axes=(None, 0,0))(self, self.indices, states)
+        create_samples = lambda shadow, indices, state, noise_keys: shadow._sample(
+            indices, state, noise_keys
+        )
+        outcomes = jax.vmap(create_samples, in_axes=(None, 0, 0, 0))(
+            self, self.indices, states, self.noise_keys
+        )
         return self.replace(outcomes=outcomes)
 
     def sample_clifford(self, key, states):
