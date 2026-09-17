@@ -113,7 +113,10 @@ class Shadow(ABC, struct.PyTreeNode):
     def _sample(self, indices, state, noise_keys):
         U_treedef = jax.tree_util.tree_structure(self.U)
         state_treedef = jax.tree_util.tree_structure(state)
-        circuit = self._sample_circuit(self.n, U_treedef, state_treedef, self.device, self.noise_fun)
+        circuit = self._sample_circuit(
+            self.n, U_treedef, state_treedef, self.device,
+            self.noise_fun, self.U.circuit_fun,
+        )
         outcomes = circuit(indices, self.U, state, noise_keys)[:,0].astype(jnp.int32)
 
         return outcomes
@@ -139,7 +142,7 @@ class Shadow(ABC, struct.PyTreeNode):
         # wide GPU kernels over all self.N circuits instead.
         if (
             key is not None
-            and self.device == "lightning.gpu"
+            # and self.device == "lightning.gpu"
             and hasattr(states, "state_dm")
         ):
             if isinstance(self, PauliShadow):
@@ -367,6 +370,7 @@ class Shadow(ABC, struct.PyTreeNode):
         state_treedef,
         device: str,
         noise_fun,
+        circuit_fun,
     ):
         U_axes = U_treedef.unflatten(
             [None] * U_treedef.num_leaves
@@ -386,7 +390,7 @@ class Shadow(ABC, struct.PyTreeNode):
             @qp.qnode(dev)
             def circuit(ind, U, state, keys):
                 state()
-                U(ind)
+                circuit_fun(ind, **U.static_args, **U.dynamic_args)
                 return qp.sample()
         else:
             @qp.set_shots(1)
@@ -394,7 +398,7 @@ class Shadow(ABC, struct.PyTreeNode):
             def circuit(ind, U, state, keys):
                 state()
                 noise_fun(key=keys, n=n)
-                U(ind)
+                circuit_fun(ind, **U.static_args, **U.dynamic_args)
                 return qp.sample()
 
 
