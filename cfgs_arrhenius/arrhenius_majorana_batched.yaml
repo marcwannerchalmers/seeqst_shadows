@@ -26,6 +26,12 @@ batch:
   samples: 16384
 
 experiments:
+  - id: clifford_majorana
+    shadow_class: CliffordShadow
+    shadow_args: {simulator: statevector}
+    experiment_name: Clifford
+    path_prefix: results_arrhenius/CliffordMajorana_rdm{k}
+    verbose: true
   - id: seeqst_majorana
     shadow_class: SEEQSTShadow
     shadow_args: {simulator: statevector}
@@ -37,12 +43,6 @@ experiments:
     shadow_args: {simulator: statevector}
     experiment_name: Pauli
     path_prefix: results_arrhenius/PauliMajorana_rdm{k}
-    verbose: true
-  - id: clifford_majorana
-    shadow_class: CliffordShadow
-    shadow_args: {simulator: statevector}
-    experiment_name: Clifford
-    path_prefix: results_arrhenius/CliffordMajorana_rdm{k}
     verbose: true
   - id: seeqst_majorana_binomial
     shadow_class: SEEQSTShadow

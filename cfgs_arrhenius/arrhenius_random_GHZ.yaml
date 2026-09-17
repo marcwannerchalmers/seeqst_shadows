@@ -4,11 +4,11 @@ defaults:
 # Recreates experiment_random_GHZ(4, 10, 2, 2^12, 3, 1, 5, 1024).
 name: arrhenius_random_GHZ
 seed: 12345
-nmin: 30
-nmax_exclusive: 32
+nmin: 50
+nmax_exclusive: 52
 n_step: 2
-k: 1
-N: 262144
+k: 2
+N: 2097152
 
 qubits:
   range:
@@ -20,7 +20,7 @@ samples:
     start: 4096
     stop: N+1
     step: 4096
-repetitions: 1
+repetitions: 10
 
 state:
   class: GHZType
@@ -29,13 +29,13 @@ state:
 # These defaults are overridden by the locality sweep below.
 observables:
   init: random
-  count: 100
+  count: 50
   sample_indices: [X, Y]
   padding_indices: [I, Z]
 
 batch:
   states: 1
-  observables: 10
+  observables: 50
   samples: 1024
 
 experiments:
