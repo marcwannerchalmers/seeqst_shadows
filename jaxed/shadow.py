@@ -426,9 +426,21 @@ class Shadow(ABC, struct.PyTreeNode):
         return jnp.asarray(circuit(states, obs), dtype=jnp.float32)
 
     def ground_truth(self, states: State, observables: Observable):
+        if self.simulator == "clifford":
+            if not isinstance(states, GHZType) or not isinstance(
+                observables, PauliObservable
+            ):
+                raise NotImplementedError(
+                    "Clifford ground truth requires GHZType states and "
+                    "PauliObservable observables"
+                )
+            tableaus = jax.vmap(
+                lambda state: state.clifford(Tableau.create(self.n))
+            )(states)
+            return jax.vmap(
+                lambda tableau: jax.vmap(tableau.expval)(observables.params)
+            )(tableaus).astype(jnp.float32)
         return jax.vmap(self._ground_truth, in_axes=(None,0), out_axes=1)(states, observables)
-
-    # TODO: Implement Clifford ground truth. Make it depend on n and remove it from shadow class
 
     ####################################
 
