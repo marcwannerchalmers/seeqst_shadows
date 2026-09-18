@@ -53,6 +53,42 @@ experiments:
     experiment_name: SEEQST binom q=(n-{offset})/n; Z/I locality {offset}
     path_prefix: results_arrhenius/SEEQSTGHZ_xy_eps{offset}
     verbose: true
+  - id: clifford_ghz_locality
+    for_each:
+      variable: offset
+      range: {start: 1, stop: k+1}
+    shadow_class: CliffordShadow
+    qubits:
+      range:
+        start: 5
+        stop: 25
+        step: 5
+    observables:
+      k_local: n-offset
+    shadow_args:
+      simulator: clifford
+    k_local: n-offset
+    experiment_name: Clifford; Z/I locality {offset}
+    path_prefix: results_arrhenius/CliffordGHZ_xy_eps{offset}
+    verbose: true
+  - id: pauli_ghz_locality
+    for_each:
+      variable: offset
+      range: {start: 1, stop: k+1}
+    shadow_class: PauliShadow
+    qubits:
+      range:
+        start: 5
+        stop: 25
+        step: 5
+    observables:
+      k_local: n-offset
+    shadow_args:
+      simulator: clifford
+    k_local: n-offset
+    experiment_name: Pauli; Z/I locality {offset}
+    path_prefix: results_arrhenius/PauliGHZ_xy_eps{offset}
+    verbose: true
 
 plot:
   function: plot_sample_complexity

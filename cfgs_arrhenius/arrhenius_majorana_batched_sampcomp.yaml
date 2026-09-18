@@ -1,0 +1,100 @@
+defaults:
+  - _self_
+
+name: arrhenius_majorana_batched
+seed: 12345
+nmin: 16
+nmax_exclusive: 18
+n_step: 2
+k: 2
+N: 131072
+
+qubits:
+  range:
+    start: ${nmin}
+    stop: ${nmax_exclusive}
+    step: ${n_step}
+samples:
+  range: 
+    start: 4096
+    stop: N+1
+    step: 4096
+repetitions: 10
+
+state:
+  class: MajoranaState
+  name: Majorana_state
+
+observables:
+  init: majorana_rdm
+  order: ${k}
+
+batch:
+  states: 1
+  observables: 1
+  samples: 128
+
+experiments:
+  - id: clifford_majorana
+    shadow_class: CliffordShadow
+    shadow_args: {simulator: statevector}
+    experiment_name: Clifford
+    path_prefix: results_arrhenius/CliffordMajorana_rdm{k}_sc
+    verbose: true
+  - id: pauli_majorana
+    shadow_class: PauliShadow
+    shadow_args: {simulator: statevector}
+    experiment_name: Pauli
+    path_prefix: results_arrhenius/PauliMajorana_rdm{k}_sc
+    verbose: true
+  - id: seeqst_majorana_binomial
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: statevector
+      distribution: {name: binomial, q: mean_xy_support}
+    experiment_name: SEEQST binom
+    path_prefix: results_arrhenius/SEEQSTMajoranaBinom_rdm{k}_sc
+    verbose: true
+  - id: fermionic_gaussian
+    shadow_class: FermionicGaussianShadow
+    shadow_args: {simulator: statevector}
+    experiment_name: FGU
+    path_prefix: results_arrhenius/FGUMajorana_rdm{k}_sc
+    verbose: true
+  - id: seeqst_majorana_binomial_optimized
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: statevector
+      distribution: {name: binomial, q: rdm_optim}
+    experiment_name: "SEEQST binom optim q={q:.2f}"
+    path_prefix: results_arrhenius/SEEQSTMajoranaBinomOptim_rdm{k}_sc
+    verbose: true
+  - id: seeqst_majorana_fixed_weight
+    shadow_class: SEEQSTShadow
+    shadow_args:
+      simulator: statevector
+      distribution: {name: fixed_weight, weights: rdm_optim}
+    experiment_name: SEEQST fixed-weight optim
+    path_prefix: results_arrhenius/SEEQSTMajoranaFixedWeight_rdm{k}_sc
+    verbose: true
+
+plot:
+  function: plot_sample_complexity
+  epsilon: 0.1
+  path: results_arrhenius/majorana_sc_n{n}_k{k}_Nobs{N_obs}_reps{reps}_N{Nmax}.pdf
+  x: n
+  xlog: false
+  ylog: true
+  metric: rmse
+  aggregation_batch_size: 16
+  progress: true
+  style:
+    font_sizes: {axes: 12, ticks: 10, legend: 9, legend_title: 10}
+    marker_size: 8
+    line_width: 2
+    legend_location: upper left
+
+hydra:
+  run: {dir: .}
+  output_subdir: null
+  job: {chdir: false}

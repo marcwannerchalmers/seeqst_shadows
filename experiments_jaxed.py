@@ -15,37 +15,6 @@ from jax import numpy as jnp
 from GPshadow import GPShadow
 
 
-def GHZ_Klocal(locality: int):
-    """Return a GHZType subclass with exactly ``locality`` active qubits."""
-
-    class KLocalGHZ(GHZType):
-        @classmethod
-        def init_random(cls, key: Array, N_state: int, n: int) -> State:
-            if not 1 <= locality <= n:
-                raise ValueError("GHZ locality must satisfy 1 <= locality <= n")
-
-            key_blocks, key_xy = random.split(key)
-            priorities = random.uniform(
-                key_blocks,
-                (N_state, n),
-                dtype=jnp.float32,
-            )
-            active = jnp.argsort(priorities, axis=1)[:, :locality]
-            blocks = jnp.zeros((N_state, n), dtype=jnp.int32)
-            blocks = blocks.at[jnp.arange(N_state)[:, None], active].set(1)
-            xy = random.randint(
-                key_xy,
-                (N_state,),
-                0,
-                2,
-                dtype=jnp.int32,
-            )
-            return cls.init(blocks, xy)
-
-    KLocalGHZ.__name__ = f"GHZ_{locality}local"
-    return KLocalGHZ
-
-
 def test_multiple_hom_paulis(n: int):
     ns = list(range(n,n+1))
     Ns = [2**k for k in range(7, 15)]
