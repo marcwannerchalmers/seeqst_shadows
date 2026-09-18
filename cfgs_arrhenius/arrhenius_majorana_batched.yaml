@@ -22,8 +22,8 @@ observables:
 
 batch:
   states: 1
-  observables: 1
-  samples: 16384
+  observables: 23
+  samples: 1024
 
 experiments:
   - id: clifford_majorana
